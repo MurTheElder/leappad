@@ -1,0 +1,6 @@
+{
+  "variants": {
+    "axis=x": { "model": "leappad:block/leap_portal_ew" },
+    "axis=z": { "model": "leappad:block/leap_portal_ns" }
+  }
+}
