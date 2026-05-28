@@ -17,7 +17,7 @@ package elder.leapp.fabric.mixin;
 // Gate release (D1-B):
 //   On first intercept, args are stored in leappad_pendingArgs.
 //   When the orchestrator finishes all pre-connection work, it calls releaseGate().
-//   releaseGate() sets leappad_bypassGate = true, then re-calls ConnectScreen.startConnecting()
+//   releaseGate() sets leappad_bypassGate = true, then re-calls ConnectScreen.connect()
 //   using the stored args, scheduled on the render thread.
 //   On that second intercept, the mixin sees leappad_bypassGate, clears it, and
 //   does not cancel — vanilla connect runs normally.
@@ -99,15 +99,15 @@ public class ConnectScreenMixin {
         leappad_bypassGate = true;
 
         // Schedule the vanilla connect re-trigger on the render thread.
-        // ConnectScreen.connect(Screen, Minecraft, ServerAddress, ServerData) is the
-        // public static entry point in 1.20.1 (renamed to startConnecting() in 1.20.2+).
-        // It constructs the screen internally and calls the private connect() instance
-        // method, which our mixin intercepts. The bypass flag ensures we let it through.
+        // ConnectScreen.connect(Minecraft, ServerAddress, ServerData) is the public
+        // static 3-param entry point in 1.20.1. It constructs a ConnectScreen internally
+        // and calls the private instance connect() method that our mixin intercepts.
+        // The bypass flag ensures the mixin lets it through on this second call.
         Minecraft mc = Minecraft.getInstance();
         final ServerAddress finalAddress = address;
         final ServerData finalServerData = serverData;
         mc.execute(() ->
-            ConnectScreen.connect(mc.screen, mc, finalAddress, finalServerData)
+            ConnectScreen.connect(mc, finalAddress, finalServerData)
         );
 
         LeapPadCommon.LOGGER.info(
