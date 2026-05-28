@@ -1,0 +1,46 @@
+name: Build - Release (X.0.0)
+
+on:
+  workflow_dispatch:
+    branches-ignore:
+      - main
+
+jobs:
+  bump-and-pr:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Bump major version in gradle.properties
+        run: |
+          CURRENT=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          MAJOR=$(echo $CURRENT | cut -d'.' -f1)
+          NEW_MAJOR=$((MAJOR + 1))
+          NEW_VERSION="${NEW_MAJOR}.0.0"
+          sed -i "s/^mod_version=.*/mod_version=${NEW_VERSION}/" gradle.properties
+          echo "MOD_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          echo "Bumped $CURRENT -> $NEW_VERSION"
+
+      - name: Commit version bump to branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gradle.properties
+          git commit -m "Release v${{ env.MOD_VERSION }}"
+          git push
+
+      - name: Open pull request to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "Release v${{ env.MOD_VERSION }}" \
+            --body "Automated release version bump to v${{ env.MOD_VERSION }}. Review and merge to trigger release build." \
+            --base main \
+            --head ${{ github.ref_name }}

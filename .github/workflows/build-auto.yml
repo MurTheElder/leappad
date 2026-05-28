@@ -1,0 +1,90 @@
+name: Build - Auto Release (on merge to main)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'gradle.properties'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Read version from gradle.properties
+        run: |
+          VERSION=$(grep '^mod_version=' gradle.properties | cut -d'=' -f2 | tr -d '[:space:]')
+          echo "MOD_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG=v$VERSION" >> $GITHUB_ENV
+          echo "Version: $VERSION"
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build Fabric jar
+        run: ./gradlew :fabric:build --no-daemon
+
+      - name: Find and verify jar
+        run: |
+          JAR_PATH=$(find fabric/build/libs -type f -name "*.jar" ! -name "*-sources.jar" ! -name "*-dev.jar" | head -1)
+          if [ -z "$JAR_PATH" ]; then
+            echo "ERROR: No jar found in fabric/build/libs/"
+            exit 1
+          fi
+          echo "Jar found: $JAR_PATH"
+          echo "JAR_PATH=$JAR_PATH" >> $GITHUB_ENV
+
+      - name: Verify jar is a valid zip
+        run: |
+          if ! unzip -t "$JAR_PATH" > /dev/null 2>&1; then
+            echo "ERROR: Jar file is not a valid zip archive."
+            exit 1
+          fi
+
+      - name: Verify jar contains fabric.mod.json
+        run: |
+          if ! unzip -l "$JAR_PATH" | grep -q "fabric.mod.json"; then
+            echo "ERROR: fabric.mod.json not found inside jar."
+            exit 1
+          fi
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: leappad-fabric-${{ env.MOD_VERSION }}
+          path: ${{ env.JAR_PATH }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release and tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Leap! Pad ${{ env.TAG }}
+          draft: true
+          files: ${{ env.JAR_PATH }}
+          body: |
+            Leap! Pad Fabric ${{ env.MOD_VERSION }}
+            Built from commit ${{ github.sha }}
