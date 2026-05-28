@@ -18,17 +18,16 @@ package elder.leapp.portal;
 //   - World address storage (so LeapPortalBlock can read this world's own address)
 //   - Pending mirror portal tracking for UUID finalisation at step 10 (ST4)
 //
-// S5 fix: NbtIo.read(File) and NbtIo.write(CompoundTag, File) replaced with
-// NbtIo.readCompressed(Path, NbtAccounter) and NbtIo.writeCompressed(CompoundTag, Path).
-// The registry file is now written gzip-compressed. Any portal_registry.dat written
-// by pre-fix builds will not load correctly — safe to ignore, no live data exists yet.
+// S5 note: NbtIo.read(File) and NbtIo.write(CompoundTag, File) are deprecated in
+// 1.20.1 but are the only available overloads at this Minecraft version. Path-based
+// and NbtAccounter-based overloads do not exist until later versions. The deprecation
+// warning is harmless — these calls are correct and safe for 1.20.1.
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.config.LeapPadConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.Tag;
 
@@ -92,8 +91,9 @@ public class PortalRegistry {
         }
 
         try {
-            // S5 fix: use Path-based NbtIo.readCompressed instead of deprecated File-based read
-            CompoundTag root = NbtIo.readCompressed(registryPath, NbtAccounter.unlimitedHeap());
+            // NbtIo.read(File) is deprecated in 1.20.1 but is the correct call for this version.
+            // Path-based overloads are not available until later Minecraft versions.
+            CompoundTag root = NbtIo.read(registryPath.toFile());
             if (root == null) return;
 
             ListTag entries = root.getList("portals", Tag.TAG_COMPOUND);
@@ -151,8 +151,8 @@ public class PortalRegistry {
             }
 
             root.put("portals", entries);
-            // S5 fix: use Path-based NbtIo.writeCompressed instead of deprecated File-based write
-            NbtIo.writeCompressed(root, registryPath);
+            // NbtIo.write(CompoundTag, File) is deprecated in 1.20.1 but is the correct call.
+            NbtIo.write(root, registryPath.toFile());
         } catch (IOException e) {
             LeapPadCommon.LOGGER.error("[Leap! Pad] Failed to save portal_registry.dat: {}", e.getMessage());
         }
