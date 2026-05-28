@@ -10,13 +10,25 @@ package elder.leapp.transfer;
 //
 // On the portal path, also coordinates with MirrorPortalManager and PortalRegistry
 // for arrival work on the host side.
+//
+// C3 fix: PortalConnectTrigger interface added alongside existing bridge interfaces.
+//         All four bridge interfaces (PacketSender, GateReleaser, PlayerNotifier,
+//         PortalConnectTrigger) are injected from LeapPadFabricClient at startup.
+//
+// S2 fix: triggerPortalConnect() added — called by LeapPortalBlock instead of
+//         onConnectionAttempt() directly. Delegates to PortalConnectTrigger bridge.
+//
+// S6 fix: Session no longer added to activeSessions with a null transfer key.
+//         A pendingPlayerUuids set tracks players in the probe phase. The session
+//         is only added to activeSessions once the transfer key is known (probe success).
+//         failSession() and discardSession() also clean up pendingPlayerUuids.
 
 import elder.leapp.LeapPadCommon;
-import elder.leapp.portal.MirrorPortalManager;
 import elder.leapp.portal.PortalRegistry;
 import elder.leapp.profile.ProfileManager;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -28,16 +40,24 @@ public class TransferOrchestrator {
     // -------------------------------------------------------
     // Timeout values (milliseconds) — from Architecture Plan Part 7
     // -------------------------------------------------------
-    private static final long TIMEOUT_PROBE_MS        = 5_000;  // Steps 3-4
-    private static final long TIMEOUT_PROFILE_MS      = 15_000; // Steps 5-6
-    private static final long TIMEOUT_HOST_PREP_MS    = 5_000;  // Steps 7-10
-    private static final long TIMEOUT_READY_MS        = 5_000;  // Steps 11-12
+    private static final long TIMEOUT_PROBE_MS     = 5_000;  // Steps 3-4
+    private static final long TIMEOUT_PROFILE_MS   = 15_000; // Steps 5-6
+    private static final long TIMEOUT_HOST_PREP_MS = 5_000;  // Steps 7-10
+    private static final long TIMEOUT_READY_MS     = 5_000;  // Steps 11-12
 
     // -------------------------------------------------------
     // Active sessions — one per player attempting a transfer
     // Key: player UUID string
+    // Only populated once the transfer key is known (after probe success).
     // -------------------------------------------------------
     private static final Map<String, TransferSession> activeSessions = new ConcurrentHashMap<>();
+
+    // S6 fix: Tracks players currently in the probe phase, before a session exists.
+    // Prevents a second connection attempt starting while the probe is in flight.
+    // Entries are added at the start of onConnectionAttempt() and removed when
+    // the session is promoted to activeSessions, or when the probe fails/times out.
+    private static final Set<String> pendingPlayerUuids =
+        ConcurrentHashMap.newKeySet();
 
     // -------------------------------------------------------
     // Per-player cooldown tracking
@@ -74,8 +94,8 @@ public class TransferOrchestrator {
                                            String originPortalUuid,
                                            String originAddress) {
 
-        // Don't start a new session if one is already in progress for this player
-        if (activeSessions.containsKey(playerUuid)) {
+        // Don't start a new session if one is already active or probing for this player
+        if (activeSessions.containsKey(playerUuid) || pendingPlayerUuids.contains(playerUuid)) {
             LeapPadCommon.LOGGER.info(
                 "[Leap! Pad] Transfer already in progress for player {}, ignoring new attempt.", playerUuid
             );
@@ -83,93 +103,141 @@ public class TransferOrchestrator {
         }
 
         boolean isPortalPath = (originPortalUuid != null);
-        boolean leapForward = ProfileManager.isLeapForwardPresent();
+        boolean leapForward  = ProfileManager.isLeapForwardPresent();
 
-        // Create a placeholder session — transferKey will be filled in after probe
-        TransferSession session = new TransferSession(
-            null, // transferKey not yet known
-            targetAddress,
-            originAddress,
-            isPortalPath,
-            originPortalUuid,
-            leapForward
-        );
-        activeSessions.put(playerUuid, session);
+        // S6 fix: Register the player as pending before starting the probe.
+        // No TransferSession is created yet — the transfer key is not known until
+        // the probe succeeds. The session is constructed inside runProbe().
+        pendingPlayerUuids.add(playerUuid);
+
+        // Capture values for the probe thread lambda
+        final String capturedTarget       = targetAddress;
+        final String capturedOriginUuid   = originPortalUuid;
+        final String capturedOriginAddr   = originAddress;
+        final boolean capturedLf          = leapForward;
+        final boolean capturedPortalPath  = isPortalPath;
 
         // Run the probe on a background thread — never block the game thread
-        Thread probeThread = new Thread(() -> runProbe(playerUuid, session), "LeapPad-Probe");
+        Thread probeThread = new Thread(
+            () -> runProbe(playerUuid, capturedTarget, capturedOriginUuid,
+                           capturedOriginAddr, capturedPortalPath, capturedLf),
+            "LeapPad-Probe"
+        );
         probeThread.setDaemon(true);
         probeThread.start();
+    }
+
+    // -------------------------------------------------------
+    // Portal connect trigger — called by LeapPortalBlock (S2 fix)
+    // -------------------------------------------------------
+
+    // Called by LeapPortalBlock.entityInside() instead of onConnectionAttempt() directly.
+    // Delegates to the PortalConnectTrigger bridge, which stores portal context in
+    // ConnectScreenMixin and triggers a vanilla connect on the client thread.
+    // The mixin then intercepts that connect and calls onConnectionAttempt() with
+    // the portal context already in place.
+    public static void triggerPortalConnect(String targetAddress,
+                                            String portalUuid,
+                                            String originAddress) {
+        if (portalConnectTrigger != null) {
+            portalConnectTrigger.triggerConnect(targetAddress, portalUuid, originAddress);
+        } else {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] triggerPortalConnect called but PortalConnectTrigger is not injected."
+            );
+        }
     }
 
     // -------------------------------------------------------
     // Step 3 — probe
     // -------------------------------------------------------
 
-    private static void runProbe(String playerUuid, TransferSession session) {
-        String leapForwardFlag = session.leapForwardPresent ? "present" : "absent";
+    private static void runProbe(String playerUuid,
+                                  String targetAddress,
+                                  String originPortalUuid,
+                                  String originAddress,
+                                  boolean isPortalPath,
+                                  boolean leapForward) {
+        String leapForwardFlag = leapForward ? "present" : "absent";
         LeapPadCommon.LOGGER.info(
             "[Leap! Pad] Probing {} for player {} (Leap! Forward: {})",
-            session.targetAddress, playerUuid, leapForwardFlag
+            targetAddress, playerUuid, leapForwardFlag
         );
 
         // Parse host and port from targetAddress (format: "host:port")
         String host;
         int port;
         try {
-            int colon = session.targetAddress.lastIndexOf(':');
-            host = session.targetAddress.substring(0, colon);
-            port = Integer.parseInt(session.targetAddress.substring(colon + 1));
+            int colon = targetAddress.lastIndexOf(':');
+            host = targetAddress.substring(0, colon);
+            port = Integer.parseInt(targetAddress.substring(colon + 1));
         } catch (Exception e) {
-            failSession(playerUuid, session, "Step 3", "Could not parse target address: " + session.targetAddress);
+            pendingPlayerUuids.remove(playerUuid);
+            LeapPadCommon.LOGGER.error(
+                "[Leap! Pad] Transfer failed at Step 3 for player {}: Could not parse target address: {}",
+                playerUuid, targetAddress
+            );
+            notifyPlayerPortalInactive(playerUuid);
             return;
         }
 
-        // Get this client's external IP — for now resolved from ProfileManager cache
-        // (Full async IP fetch logic lives in FabricCommandRegistry for /leappad ip,
-        // and is reused here via ProfileManager.getCachedExternalIp())
+        // Get this client's external IP from the ProfileManager cache.
+        // The cache is populated by /leappad ip (async fetch via FabricCommandRegistry).
         String clientIp = ProfileManager.getCachedExternalIp();
         if (clientIp == null || clientIp.isEmpty()) {
             clientIp = "unknown";
         }
 
         WorldPinger.PingOutcome outcome = WorldPinger.probe(
-            host, port, clientIp, session.leapForwardPresent
+            host, port, clientIp, leapForward
         );
 
         switch (outcome.result) {
             case UNREACHABLE -> {
                 // Gate never releases — player stays on current screen
-                LeapPadCommon.LOGGER.info("[Leap! Pad] Target unreachable: {}", session.targetAddress);
+                LeapPadCommon.LOGGER.info("[Leap! Pad] Target unreachable: {}", targetAddress);
+                pendingPlayerUuids.remove(playerUuid);
                 notifyPlayerPortalInactive(playerUuid);
-                discardSession(playerUuid);
             }
             case REACHABLE_NO_LP -> {
-                // Show warning screen — player can cancel or confirm
-                session.advanceTo(TransferSession.TransferState.AWAITING_GATE);
-                notifyPlayerNoLeapPad(playerUuid, session.targetAddress);
+                // S6 fix: Promote from pending to active now — transfer key is still
+                // null here but the session only needs to hold state for the warning
+                // screen decision, after which the player either cancels or proceeds
+                // to vanilla join (no Leap! Pad sequence runs).
+                // We use a sentinel empty-string transfer key for this path only.
+                TransferSession noLpSession = new TransferSession(
+                    "",  // no transfer key — non-Leap! Pad target
+                    targetAddress, originAddress, isPortalPath,
+                    originPortalUuid, leapForward
+                );
+                noLpSession.advanceTo(TransferSession.TransferState.AWAITING_GATE);
+                pendingPlayerUuids.remove(playerUuid);
+                activeSessions.put(playerUuid, noLpSession);
+                notifyPlayerNoLeapPad(playerUuid, targetAddress);
             }
             case REACHABLE_HAS_LP -> {
-                // Store the transfer key and move to profile check
-                // Sessions are immutable on transferKey — create a replacement
-                TransferSession updated = new TransferSession(
+                // S6 fix: Transfer key is now known — construct the session here,
+                // not before the probe. This is the first point at which a real
+                // session with a valid transfer key enters activeSessions.
+                TransferSession session = new TransferSession(
                     outcome.transferKey,
-                    session.targetAddress,
-                    session.originAddress,
-                    session.isPortalPath,
-                    session.originPortalUuid,
-                    session.leapForwardPresent
+                    targetAddress,
+                    originAddress,
+                    isPortalPath,
+                    originPortalUuid,
+                    leapForward
                 );
-                activeSessions.put(playerUuid, updated);
+                pendingPlayerUuids.remove(playerUuid);
+                activeSessions.put(playerUuid, session);
 
-                // If profile string is already set, skip selector (step 6 directly)
+                // If a profile is already selected, skip the selector (step 6 directly)
                 String activeProfile = ProfileManager.getActiveProfileUuid();
                 if (activeProfile != null && !activeProfile.isEmpty()) {
-                    updated.advanceTo(TransferSession.TransferState.SENDING_DAT);
-                    sendProfileDat(playerUuid, updated);
+                    session.advanceTo(TransferSession.TransferState.SENDING_DAT);
+                    sendProfileDat(playerUuid, session);
                 } else {
                     // Open profile selector (step 5)
-                    updated.advanceTo(TransferSession.TransferState.AWAITING_PROFILE);
+                    session.advanceTo(TransferSession.TransferState.AWAITING_PROFILE);
                     openProfileSelector(playerUuid);
                 }
             }
@@ -182,7 +250,7 @@ public class TransferOrchestrator {
 
     private static void sendProfileDat(String playerUuid, TransferSession session) {
         String profileUuid = ProfileManager.getActiveProfileUuid();
-        byte[] datBlob = ProfileManager.getActiveDatBlob();
+        byte[] datBlob     = ProfileManager.getActiveDatBlob();
 
         if (profileUuid == null || datBlob == null) {
             // No profile — proceed without sending dat (host will use vanilla dat)
@@ -191,8 +259,10 @@ public class TransferOrchestrator {
             return;
         }
 
-        // Actual packet sending is handled by FabricNetworking via the PacketSender interface
-        packetSender.sendProfileDat(playerUuid, profileUuid, datBlob, session.leapForwardPresent);
+        // Delegate to FabricNetworking via the PacketSender interface
+        if (packetSender != null) {
+            packetSender.sendProfileDat(playerUuid, profileUuid, datBlob, session.leapForwardPresent);
+        }
         session.advanceTo(TransferSession.TransferState.AWAITING_HOST_PREP);
     }
 
@@ -204,7 +274,6 @@ public class TransferOrchestrator {
     public static void onUuidListReceived(String playerUuid, String[] hostUuids) {
         TransferSession session = activeSessions.get(playerUuid);
         if (session == null) return;
-
         if (!session.isPortalPath) return;
 
         session.advanceTo(TransferSession.TransferState.DECONFLICTING);
@@ -233,7 +302,7 @@ public class TransferOrchestrator {
 
         session.agreedPortalUuid = agreedUuid;
         session.advanceTo(TransferSession.TransferState.SENDING_UUID);
-        packetSender.sendUuidConfirm(playerUuid, agreedUuid);
+        if (packetSender != null) packetSender.sendUuidConfirm(playerUuid, agreedUuid);
     }
 
     // -------------------------------------------------------
@@ -247,10 +316,16 @@ public class TransferOrchestrator {
 
         session.advanceTo(TransferSession.TransferState.COMPLETE);
 
-        // Release the gate — vanilla join runs now
-        gateReleaser.releaseGate(playerUuid);
+        // Release the gate — vanilla join runs now (D1-B)
+        if (gateReleaser != null) {
+            gateReleaser.releaseGate(playerUuid);
+        } else {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] GateReleaser not injected — gate cannot release for player {}.", playerUuid
+            );
+        }
 
-        // Record cooldown timestamp
+        // Record cooldown timestamp so the player can't re-use portals immediately
         cooldownMap.put(playerUuid, System.currentTimeMillis());
 
         discardSession(playerUuid);
@@ -263,9 +338,9 @@ public class TransferOrchestrator {
 
     private static void checkTimeouts() {
         for (Map.Entry<String, TransferSession> entry : activeSessions.entrySet()) {
-            String playerUuid = entry.getKey();
+            String playerUuid      = entry.getKey();
             TransferSession session = entry.getValue();
-            long elapsed = session.millisInCurrentState();
+            long elapsed           = session.millisInCurrentState();
 
             boolean timedOut = switch (session.state) {
                 case PROBING, AWAITING_GATE ->
@@ -305,11 +380,11 @@ public class TransferOrchestrator {
 
     private static void discardSession(String playerUuid) {
         activeSessions.remove(playerUuid);
+        pendingPlayerUuids.remove(playerUuid); // S6: clean up in case discard is called early
     }
 
     // Generates a portal UUID at the configured active length
     private static String generatePortalUuid() {
-        // Full UUID is too long — trim to active length, pad/truncate as needed
         String full = UUID.randomUUID().toString().replace("-", "");
         int len = elder.leapp.config.LeapPadConfig.portalDesignationActiveLength;
         if (full.length() >= len) return full.substring(0, len);
@@ -326,8 +401,8 @@ public class TransferOrchestrator {
 
     // -------------------------------------------------------
     // Platform bridge interfaces
-    // These are implemented in the fabric/ subproject and injected at startup.
-    // They allow common code to trigger client-side UI and packet sends
+    // Implemented in the fabric/ subproject and injected at startup from LeapPadFabricClient.
+    // Allow common code to trigger client-side UI, packet sends, and vanilla connect
     // without importing Fabric-specific classes directly.
     // -------------------------------------------------------
 
@@ -338,6 +413,7 @@ public class TransferOrchestrator {
     }
 
     public interface GateReleaser {
+        // Triggers the vanilla connect for the given player using stored args (D1-B)
         void releaseGate(String playerUuid);
     }
 
@@ -349,16 +425,25 @@ public class TransferOrchestrator {
         void notifyHostReady(String playerUuid, TransferSession session);
     }
 
+    // C3 / S2: New interface — called by LeapPortalBlock to trigger a portal connect.
+    // The implementation in LeapPadFabricClient stores portal context in ConnectScreenMixin
+    // and initiates a vanilla connect on the client thread (D2-B).
+    public interface PortalConnectTrigger {
+        void triggerConnect(String targetAddress, String portalUuid, String originAddress);
+    }
+
     // Injected by LeapPadFabricClient at startup
-    private static PacketSender packetSender;
-    private static GateReleaser gateReleaser;
-    private static PlayerNotifier playerNotifier;
+    private static PacketSender         packetSender;
+    private static GateReleaser         gateReleaser;
+    private static PlayerNotifier       playerNotifier;
+    private static PortalConnectTrigger portalConnectTrigger;
 
-    public static void setPacketSender(PacketSender sender) { packetSender = sender; }
-    public static void setGateReleaser(GateReleaser releaser) { gateReleaser = releaser; }
-    public static void setPlayerNotifier(PlayerNotifier notifier) { playerNotifier = notifier; }
+    public static void setPacketSender(PacketSender sender)               { packetSender = sender; }
+    public static void setGateReleaser(GateReleaser releaser)             { gateReleaser = releaser; }
+    public static void setPlayerNotifier(PlayerNotifier notifier)         { playerNotifier = notifier; }
+    public static void setPortalConnectTrigger(PortalConnectTrigger t)    { portalConnectTrigger = t; }
 
-    // Convenience wrappers that null-check before calling notifier
+    // Convenience wrappers — null-check before calling notifier
     private static void notifyPlayerPortalInactive(String playerUuid) {
         if (playerNotifier != null) playerNotifier.showPortalInactive(playerUuid);
     }
