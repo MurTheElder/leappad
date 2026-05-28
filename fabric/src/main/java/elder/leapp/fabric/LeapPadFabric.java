@@ -12,6 +12,7 @@ package elder.leapp.fabric;
 //   - Inject the AutosavePushManager.DatPusher bridge (C4)
 //   - On world start: load config, init port cache, start ProbeListener,
 //     load portal registry, init autosave buckets (C6, C7)
+//   - Hook server tick to fire AutosavePushManager.onAutosave() every 6000 ticks
 //   - Register the ServerPlayConnectionEvents.JOIN listener for bucket assignment
 //   - Register the ServerPlayConnectionEvents.DISCONNECT listener for dat push on leave
 
@@ -25,6 +26,7 @@ import elder.leapp.profile.AutosavePushManager;
 import elder.leapp.transfer.ProbeListener;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.world.level.storage.LevelResource;
@@ -83,6 +85,17 @@ public class LeapPadFabric implements ModInitializer {
             AutosavePushManager.init();
 
             LeapPadCommon.LOGGER.info("[Leap! Pad] World starting — config loaded, registry loaded, probe listener started.");
+        });
+
+        // Hook the autosave cycle so AutosavePushManager can push player dat on schedule.
+        // Minecraft autosaves every 6000 ticks (5 minutes) by default.
+        // We fire onAutosave() at the same interval by checking server.tickCount.
+        // This must be registered here (not inside SERVER_STARTING) so the listener
+        // is active for the entire server lifetime, not just after first world start.
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            if (server.tickCount % 6000 == 0) {
+                AutosavePushManager.onAutosave();
+            }
         });
 
         // When a player fully joins the world (after vanilla join completes),
