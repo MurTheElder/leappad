@@ -1,0 +1,28 @@
+// Leap! Pad — Root Build File
+// This file applies shared configuration to every subproject equally.
+// Subproject-specific dependencies live in their own build.gradle files.
+
+plugins {
+    id 'fabric-loom' version "${fabric_loom_version}" apply false
+}
+
+// Apply shared settings to every subproject
+subprojects {
+    apply plugin: 'java'
+
+    // Java version — must stay at 17, do not upgrade
+    java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+        withSourcesJar()
+    }
+
+    // Group and version come from gradle.properties
+    group = mod_group
+    version = mod_version
+
+    // Encode file names as UTF-8 (avoids issues on Windows build agents)
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+}
