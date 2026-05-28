@@ -1,7 +1,16 @@
-// Leap! Pad — Subproject Declaration
-// Tells Gradle that this build contains two subprojects:
-//   common/ — shared logic, no loader-specific code
-//   fabric/ — Fabric 1.20.1 wiring and API calls
+pluginManagement {
+    repositories {
+        // Fabric's Maven repository - required for fabric-loom plugin
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+// Leap! Pad subproject declaration
 rootProject.name = 'leappad'
 include('common')
 include('fabric')
