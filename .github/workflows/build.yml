@@ -1,0 +1,85 @@
+# Leap! Pad — Build Workflow
+# Triggered manually via the "Run workflow" button on the Actions tab.
+# Builds the Fabric subproject and produces a directly downloadable jar.
+# Never runs automatically on push or pull request.
+
+name: Build Leap! Pad (Fabric)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1 — Check out the repository
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Step 2 — Set up JDK 17 (Temurin)
+      # Must stay at 17. Do not change to 21 or any other version.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # Step 3 — Cache Gradle dependencies to speed up builds
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # Step 4 — Grant execute permission to the Gradle wrapper script
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      # Step 5 — Run the Fabric build
+      - name: Build Fabric jar
+        run: ./gradlew :fabric:build --no-daemon
+
+      # Step 6 — Verify the jar was actually produced
+      # Fails the workflow with a clear message if the output file is missing.
+      - name: Verify jar was produced
+        run: |
+          JAR_PATH=$(find fabric/build/libs -name "leappad-fabric-*.jar" ! -name "*-sources.jar" | head -1)
+          if [ -z "$JAR_PATH" ]; then
+            echo "ERROR: Build succeeded but no jar was found in fabric/build/libs/"
+            exit 1
+          fi
+          echo "Jar found: $JAR_PATH"
+          echo "JAR_PATH=$JAR_PATH" >> $GITHUB_ENV
+
+      # Step 7 — Verify the jar is a valid zip (corrupt builds can produce unreadable files)
+      - name: Verify jar is a valid zip
+        run: |
+          if ! unzip -t "$JAR_PATH" > /dev/null 2>&1; then
+            echo "ERROR: Jar file exists but is not a valid zip archive. The build may be corrupt."
+            exit 1
+          fi
+          echo "Jar is a valid zip archive."
+
+      # Step 8 — Verify the jar contains fabric.mod.json
+      # Confirms Fabric Loader will recognise this as a mod rather than silently ignoring it.
+      - name: Verify jar contains fabric.mod.json
+        run: |
+          if ! unzip -l "$JAR_PATH" | grep -q "fabric.mod.json"; then
+            echo "ERROR: fabric.mod.json not found inside jar. Fabric Loader will not recognise this as a mod."
+            exit 1
+          fi
+          echo "fabric.mod.json confirmed present."
+
+      # Step 9 — Upload the jar as a build artifact
+      # Directly downloadable from the Actions run page — no zip wrapper.
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: leappad-fabric-${{ github.run_number }}
+          path: ${{ env.JAR_PATH }}
+          if-no-files-found: error
