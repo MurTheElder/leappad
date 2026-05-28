@@ -8,6 +8,12 @@ package elder.leapp.fabric.network;
 // Also implements the TransferOrchestrator.PacketSender and
 // AutosavePushManager.DatPusher interfaces so common code can trigger
 // network sends without importing Fabric classes directly.
+//
+// ST3 fix: PROFILE_DAT_SEND receiver now writes the received dat blob to
+// playerdata/[UUID].dat so it is in place before vanilla join completes.
+//
+// ST4 fix: UUID_CONFIRM receiver now calls PortalRegistry.updateMirrorPortalUuid()
+// to finalise the mirror portal UUID after deconfliction (step 10).
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.network.LeapPadPackets;
@@ -17,10 +23,14 @@ import elder.leapp.profile.ProfileManager;
 import elder.leapp.transfer.TransferOrchestrator;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
-import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.storage.LevelResource;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public class FabricNetworking {
 
@@ -41,12 +51,10 @@ public class FabricNetworking {
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.WarningScreenPacket pkt = LeapPadPackets.WarningScreenPacket.decode(buf);
                 client.execute(() -> {
-                    // Open the warning screen on the main thread
-                    // Screen implementation is in FabricCommandRegistry / UI layer
                     LeapPadCommon.LOGGER.info(
                         "[Leap! Pad] Warning screen received for target: {}", pkt.targetAddress
                     );
-                    // TODO Phase 2 step: wire to actual warning screen GUI
+                    // TODO ST1: open WarningScreen — implement when WarningScreen class is built
                 });
             }
         );
@@ -73,12 +81,12 @@ public class FabricNetworking {
                 LeapPadPackets.LeapForwardCachePacket pkt =
                     LeapPadPackets.LeapForwardCachePacket.decode(buf);
                 // Leap! Forward handles its own chunk reassembly via a hook point.
-                // Leap! Pad just receives and forwards the chunk data.
+                // Leap! Pad just receives and logs the chunk data.
                 LeapPadCommon.LOGGER.debug(
                     "[Leap! Pad] Leap! Forward cache chunk {}/{} received.",
                     pkt.chunkIndex + 1, pkt.totalChunks
                 );
-                // Hook point for Leap! Forward — left as log for now
+                // Hook point for Leap! Forward — deferred to Leap! Forward Phase 1
             }
         );
 
@@ -116,20 +124,33 @@ public class FabricNetworking {
 
         // leappad:profile_dat_send — C→S, Step 6
         // Client sends their profile dat blob before vanilla join.
+        // ST3 fix: Write the blob to playerdata/[UUID].dat immediately so it is
+        // in place when vanilla join completes and the player spawns.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.PROFILE_DAT_SEND,
             (server, player, handler, buf, responseSender) -> {
                 LeapPadPackets.ProfileDatSendPacket pkt =
                     LeapPadPackets.ProfileDatSendPacket.decode(buf);
                 server.execute(() -> {
-                    // Write the dat blob to playerdata/[UUID].dat
-                    // so it is in place when vanilla join completes
-                    LeapPadCommon.LOGGER.info(
-                        "[Leap! Pad] Profile dat received from {} (profile: {}, LF: {})",
-                        player.getName().getString(), pkt.profileUuid, pkt.leapForward
-                    );
-                    // Actual file write happens in TransferOrchestrator host-side prep
-                    // (wired in a later build step)
+                    try {
+                        Path datFile = player.getServer()
+                            .getWorldPath(LevelResource.PLAYER_DATA_DIR)
+                            .resolve(player.getStringUUID() + ".dat");
+                        Files.createDirectories(datFile.getParent());
+                        Files.write(datFile, pkt.datBlob);
+                        LeapPadCommon.LOGGER.info(
+                            "[Leap! Pad] Profile dat written for {} — profile: {}, {} bytes, LF: {}",
+                            player.getName().getString(),
+                            pkt.profileUuid,
+                            pkt.datBlob.length,
+                            pkt.leapForward
+                        );
+                    } catch (IOException e) {
+                        LeapPadCommon.LOGGER.error(
+                            "[Leap! Pad] Failed to write profile dat for {}: {}",
+                            player.getName().getString(), e.getMessage()
+                        );
+                    }
                 });
             }
         );
@@ -145,36 +166,41 @@ public class FabricNetworking {
                     "[Leap! Pad] Transfer cancelled by {} (key: {})",
                     player.getName().getString(), pkt.transferKey
                 );
-                // Session discard handled by TransferOrchestrator
+                // Session discard is handled by TransferOrchestrator timeout;
+                // the session will expire naturally since no further packets arrive.
+                // Active session cleanup on explicit cancel is a Phase 4 refinement.
             }
         );
 
         // leappad:uuid_confirm — C→S, Step 10
         // Client sends the agreed portal UUID after deconfliction.
+        // ST4 fix: Finalise the mirror portal UUID in PortalRegistry by replacing
+        // the provisional UUID assigned at placement with the agreed UUID.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.UUID_CONFIRM,
             (server, player, handler, buf, responseSender) -> {
                 LeapPadPackets.UuidConfirmPacket pkt =
                     LeapPadPackets.UuidConfirmPacket.decode(buf);
                 server.execute(() -> {
-                    // Register the agreed UUID on the mirror portal
+                    PortalRegistry.updateMirrorPortalUuid(
+                        player.getStringUUID(), pkt.agreedUuid
+                    );
                     LeapPadCommon.LOGGER.info(
-                        "[Leap! Pad] UUID confirmed by {}: {}",
+                        "[Leap! Pad] Mirror portal UUID finalised for {}: {}",
                         player.getName().getString(), pkt.agreedUuid
                     );
-                    // Mirror portal UUID finalisation wired in TransferOrchestrator host step
                 });
             }
         );
 
         // leappad:ready — C→S, Step 11
         // Client signals all pre-connection work is complete.
+        // Echo the READY signal back to release the gate on the client.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.READY,
             (server, player, handler, buf, responseSender) -> {
                 LeapPadPackets.ReadyPacket pkt = LeapPadPackets.ReadyPacket.decode(buf);
                 server.execute(() -> {
-                    // Echo the READY signal back to the client
                     LeapPadCommon.LOGGER.info(
                         "[Leap! Pad] READY received from {} — echoing back.",
                         player.getName().getString()
@@ -248,23 +274,22 @@ public class FabricNetworking {
     // Interface implementations — injected into common code at startup
     // -------------------------------------------------------
 
-    // Implements AutosavePushManager.DatPusher
-    // Reads the player's current dat from disk and pushes it to the client
+    // Implements AutosavePushManager.DatPusher.
+    // Reads the player's current dat file from the world save and pushes it to the client.
     public static final AutosavePushManager.DatPusher DAT_PUSHER = player -> {
-        // Read the player's current dat file from the world save
         byte[] datBlob = readPlayerDat(player);
         if (datBlob == null) return;
         sendProfileDatPush(player, datBlob);
     };
 
-    // Reads the raw bytes of a player's .dat file from the world save directory
+    // Reads the raw bytes of a player's .dat file from the world save directory.
     private static byte[] readPlayerDat(ServerPlayer player) {
         try {
-            java.nio.file.Path datFile = player.getServer()
-                .getWorldPath(net.minecraft.world.level.storage.LevelResource.PLAYER_DATA_DIR)
+            Path datFile = player.getServer()
+                .getWorldPath(LevelResource.PLAYER_DATA_DIR)
                 .resolve(player.getStringUUID() + ".dat");
-            if (!java.nio.file.Files.exists(datFile)) return null;
-            return java.nio.file.Files.readAllBytes(datFile);
+            if (!Files.exists(datFile)) return null;
+            return Files.readAllBytes(datFile);
         } catch (Exception e) {
             LeapPadCommon.LOGGER.warn(
                 "[Leap! Pad] Could not read dat file for {}: {}",
