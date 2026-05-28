@@ -1,45 +1,43 @@
-// Leap! Pad — Fabric Subproject Build
-// This subproject contains all Fabric-specific wiring.
-// It depends on the common subproject for shared logic,
-// and adds Fabric Loader + Fabric API on top.
-
 plugins {
     id 'fabric-loom' version "${fabric_loom_version}"
 }
 
+repositories {
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
+    // Cloth Config lives here
+    maven {
+        name = 'Shedaniel'
+        url = 'https://maven.shedaniel.me/'
+    }
+    mavenCentral()
+}
+
 dependencies {
-    // Minecraft + mappings (must match common/)
     minecraft "com.mojang:minecraft:${minecraft_version}"
     mappings loom.officialMojangMappings()
 
-    // Fabric Loader — the base mod loading layer
     modImplementation "net.fabricmc:fabric-loader:${fabric_loader_version}"
-
-    // Fabric API — events, networking, registries, lifecycle hooks
     modImplementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
 
-    // Cloth Config — config UI (Fabric edition)
     modApi("me.shedaniel.cloth:cloth-config-fabric:${cloth_config_version}") {
         exclude(group: "net.fabricmc.fabric-api")
     }
 
-    // Pull in the shared common subproject
     implementation project(':common')
 }
 
-// Configure Mixin processing so Fabric Loom knows where to find our Mixins
 loom {
     mixin {
         defaultRefmapName = 'fabric-refmap.json'
     }
 }
 
-// Name the output jar exactly as expected
-// Result: fabric/build/libs/leappad-fabric-0.1.0.jar
 jar {
     archiveBaseName = 'leappad-fabric'
     archiveVersion = mod_version
 
-    // Pull common subproject classes into the final jar
     from project(':common').sourceSets.main.output
 }
