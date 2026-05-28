@@ -4,10 +4,17 @@ package elder.leapp.portal;
 // The teal portal interior block — leappad:leap_portal.
 // Placed inside a valid prismarine frame when the frame is lit with fire.
 // When a player walks into this block, it checks if the portal is linked
-// and hands off to TransferOrchestrator if so.
+// and hands off via TransferOrchestrator.triggerPortalConnect() if so.
 //
 // Has a per-player re-entry guard to prevent the transfer from firing twice
 // on the same walk-through (players occupy multiple blocks at once).
+//
+// D2-B: This class no longer calls TransferOrchestrator.onConnectionAttempt()
+// directly. Instead it calls TransferOrchestrator.triggerPortalConnect(), which
+// delegates to the PortalConnectTrigger bridge injected from LeapPadFabricClient.
+// That bridge calls ConnectScreenMixin.setPendingPortalContext() then triggers
+// a vanilla connect, which the mixin intercepts once and drives the full sequence.
+// Non-portal connection routes are completely unaffected by this change.
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.transfer.TransferOrchestrator;
@@ -15,7 +22,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
@@ -115,13 +121,12 @@ public class LeapPortalBlock extends Block {
             player.getName().getString(), portalUuid, targetAddress
         );
 
-        // Hand off to the orchestrator — it drives everything from here
-        TransferOrchestrator.onConnectionAttempt(
-            playerId.toString(),
-            targetAddress,
-            portalUuid,
-            originAddress
-        );
+        // D2-B: Hand off via bridge instead of calling the orchestrator directly.
+        // triggerPortalConnect() delegates to the PortalConnectTrigger injected at
+        // startup from LeapPadFabricClient. That bridge stores portal context in
+        // ConnectScreenMixin and triggers a vanilla connect on the client thread,
+        // which the mixin intercepts once and drives the full transfer sequence.
+        TransferOrchestrator.triggerPortalConnect(targetAddress, portalUuid, originAddress);
     }
 
     // Called by TransferOrchestrator when a transfer completes or fails,
