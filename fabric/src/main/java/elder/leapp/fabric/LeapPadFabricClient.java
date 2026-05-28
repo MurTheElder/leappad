@@ -145,13 +145,13 @@ public class LeapPadFabricClient implements ClientModInitializer {
             ServerData serverData = new ServerData("leap", targetAddress, false);
 
             // Schedule the vanilla connect on the render thread.
-            // ConnectScreen.connect(Screen, Minecraft, ServerAddress, ServerData) is the
-            // public static entry point in 1.20.1 (renamed to startConnecting() in 1.20.2+).
-            // ConnectScreenMixin intercepts the private connect() instance method that this
-            // calls internally, reads the portal context stored above, and drives the sequence.
+            // ConnectScreen.connect(Minecraft, ServerAddress, ServerData) is the public
+            // static 3-param entry point in 1.20.1. ConnectScreenMixin intercepts the
+            // private instance connect() that this calls internally, reads the portal
+            // context stored above, and drives the full transfer sequence.
             Minecraft mc = Minecraft.getInstance();
             mc.execute(() ->
-                ConnectScreen.connect(mc.screen, mc, addr, serverData)
+                ConnectScreen.connect(mc, addr, serverData)
             );
         });
 
