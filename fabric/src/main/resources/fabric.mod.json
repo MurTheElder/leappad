@@ -1,1 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "leappad",
+  "version": "0.1.0",
+  "name": "Leap! Pad",
+  "description": "Travel between friend-hosted worlds via prismarine portals.",
+  "authors": ["MurTheElder"],
 
+  "environment": "*",
+
+  "entrypoints": {
+    "main": ["elder.leapp.fabric.LeapPadFabric"],
+    "client": ["elder.leapp.fabric.LeapPadFabricClient"]
+  },
+
+  "mixins": ["leappad.mixins.json"],
+
+  "depends": {
+    "fabricloader": ">=0.19.2",
+    "fabric-api": ">=0.92.9",
+    "minecraft": "~1.20.1",
+    "java": ">=17"
+  }
+}
