@@ -99,17 +99,16 @@ public class ConnectScreenMixin {
         leappad_bypassGate = true;
 
         // Schedule the vanilla connect re-trigger on the render thread.
-        // In 1.20.1 there is no static startConnecting() — we construct a ConnectScreen
-        // and call connect() on it directly. The mixin intercepts connect() on that
-        // instance, sees the bypass flag, and lets vanilla run.
+        // ConnectScreen.connect(Screen, Minecraft, ServerAddress, ServerData) is the
+        // public static entry point in 1.20.1 (renamed to startConnecting() in 1.20.2+).
+        // It constructs the screen internally and calls the private connect() instance
+        // method, which our mixin intercepts. The bypass flag ensures we let it through.
         Minecraft mc = Minecraft.getInstance();
         final ServerAddress finalAddress = address;
         final ServerData finalServerData = serverData;
-        mc.execute(() -> {
-            ConnectScreen screen = new ConnectScreen(mc.screen, mc, finalServerData);
-            mc.setScreen(screen);
-            screen.connect(mc, finalAddress, finalServerData);
-        });
+        mc.execute(() ->
+            ConnectScreen.connect(mc.screen, mc, finalAddress, finalServerData)
+        );
 
         LeapPadCommon.LOGGER.info(
             "[Leap! Pad] Gate released for player {} — vanilla connect re-triggered.", playerUuid
