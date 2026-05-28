@@ -33,7 +33,7 @@ public class LeapPadCommon {
             .mapColor(MapColor.COLOR_CYAN)
             .noCollission()          // Players walk through portal blocks, not into them
             .lightLevel(state -> 11) // Soft teal glow, slightly dimmer than a torch
-            .noDrops()               // Portal blocks don't drop anything when broken
+            .noLootTable()               // Portal blocks don't drop anything when broken
             .replaceable()           // Can be overwritten by other blocks without breaking
     );
 
