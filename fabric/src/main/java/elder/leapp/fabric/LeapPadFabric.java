@@ -2,20 +2,34 @@ package elder.leapp.fabric;
 
 // LeapPadFabric.java
 // The Fabric server-side entry point for Leap! Pad.
-// Fabric calls the init() method here when the mod loads on the server side
+// Fabric calls onInitialize() here when the mod loads on the server side
 // (which in a listen server / LAN world is the same process as the client).
 //
 // Responsibilities:
 //   - Call LeapPadCommon.init() to register blocks and items
+//   - Register /leappad and /portalid commands (C5)
 //   - Start the ProbeListener so incoming transfer probes can be received
+//   - Register server-side packet receivers (C1)
+//   - Inject the AutosavePushManager.DatPusher bridge (C4)
+//   - Load config, init port binding cache, load portal registry on world start (C6, C7)
 //   - Register the ServerPlayConnectionEvents.JOIN listener for bucket assignment
-//   - Register Fabric event listeners for world-side logic
+//   - Register the ServerPlayConnectionEvents.DISCONNECT listener for dat push on leave
 
 import elder.leapp.LeapPadCommon;
+import elder.leapp.config.LeapPadConfig;
+import elder.leapp.fabric.network.FabricNetworking;
+import elder.leapp.fabric.registry.FabricCommandRegistry;
+import elder.leapp.portal.PortalRegistry;
+import elder.leapp.probe.PortBindingCache;
 import elder.leapp.profile.AutosavePushManager;
 import elder.leapp.transfer.ProbeListener;
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.world.level.storage.LevelResource;
+
+import java.nio.file.Path;
 
 public class LeapPadFabric implements ModInitializer {
 
@@ -24,12 +38,53 @@ public class LeapPadFabric implements ModInitializer {
         // Initialize shared content (block + item registration)
         LeapPadCommon.init();
 
+        // C5: Register /leappad and /portalid commands.
+        // Must be called here so the command registration callback fires during
+        // mod init, before the world starts.
+        FabricCommandRegistry.register();
+
+        // C1: Register server-side packet receivers so the host can receive
+        // profile_dat_send, transfer_cancel, uuid_confirm, and ready packets.
+        FabricNetworking.registerServerReceivers();
+
+        // C4: Inject the DatPusher bridge so AutosavePushManager can send
+        // profile dat to players on autosave cycles and on disconnect.
+        AutosavePushManager.setDatPusher(FabricNetworking.DAT_PUSHER);
+
+        // C6 + C7: Load config, init port binding cache, and load portal registry
+        // when the world starts. SERVER_STARTING fires before any player can connect,
+        // so all config values and registry data are guaranteed to be ready.
+        ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+            // C6: Resolve and load config from .minecraft/config/leappad.json.
+            // FabricLoader.getConfigDir() always points to .minecraft/config/
+            // regardless of whether this is a listen server or dedicated server.
+            Path configDir = FabricLoader.getInstance().getConfigDir();
+            LeapPadConfig.load(configDir);
+
+            // C7: Init port binding cache with the actual game port now that
+            // config is loaded and the server port is known.
+            PortBindingCache.init(server.getPort());
+
+            // C6: Load portal registry from the world save directory.
+            // server.getWorldPath(ROOT) returns the level folder itself (e.g.
+            // saves/New World/). The registry dat lives inside that folder.
+            Path worldSaveDir = server.getWorldPath(LevelResource.ROOT)
+                .toAbsolutePath();
+            PortalRegistry.load(worldSaveDir);
+
+            // Init autosave bucket system now that config is loaded
+            // (playerDatCyclic determines how many buckets to create).
+            AutosavePushManager.init();
+
+            LeapPadCommon.LOGGER.info("[Leap! Pad] World starting — config loaded, registry loaded.");
+        });
+
         // Start listening for incoming transfer probes on the configured probe ports.
-        // This must start here so the world is reachable before any player tries to connect.
+        // Called after SERVER_STARTING registration so the listener starts after config loads.
         ProbeListener.start();
 
         // When a player fully joins the world (after vanilla join completes),
-        // assign them to an autosave bucket. This is the ONLY thing we do post-join —
+        // assign them to an autosave bucket. This is the ONLY post-join action —
         // all other arrival work completes before vanilla join ever runs.
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             AutosavePushManager.assignBucket(handler.getPlayer());

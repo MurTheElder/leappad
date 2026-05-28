@@ -11,6 +11,11 @@ package elder.leapp.fabric.mixin;
 // and returns the book.
 //
 // Targets ItemEntity.tick() — runs every game tick for each item entity in the world.
+//
+// M2 fix: The three early-exit checks (client side, not a written book, not in a portal)
+// now only run once per second (every 20 ticks) rather than every tick. A written book
+// landing inside a portal is rare enough that a 1-second detection latency is
+// imperceptible, and this avoids unnecessary work when many item entities are loaded.
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.portal.AddressParser;
@@ -23,9 +28,9 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.item.WrittenBookItem;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -33,8 +38,17 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(ItemEntity.class)
 public class ItemEntityTickMixin {
 
+    // M2: Tick counter — incremented on every tick. The full check only runs
+    // when this reaches a multiple of 20 (once per second at 20 TPS).
+    // @Unique prevents naming collisions with other mixins targeting ItemEntity.
+    @Unique
+    private int leappad_tickCounter = 0;
+
     @Inject(method = "tick", at = @At("HEAD"))
     private void leappad_onTick(CallbackInfo ci) {
+        // M2: Throttle to once per second — skip the remaining 19 ticks out of 20.
+        if (++leappad_tickCounter % 20 != 0) return;
+
         ItemEntity self = (ItemEntity)(Object)this;
 
         // Server side only
@@ -114,7 +128,7 @@ public class ItemEntityTickMixin {
                 Component component = Component.Serializer.fromJson(pageJson);
                 if (component != null) sb.append(component.getString());
             } catch (Exception e) {
-                // If JSON parsing fails, try the raw string
+                // If JSON parsing fails, use the raw string
                 sb.append(pageJson);
             }
             sb.append(" ");

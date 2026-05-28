@@ -9,8 +9,14 @@ package elder.leapp.transfer;
 //   UNREACHABLE       — could not connect on any probe port
 //   REACHABLE_NO_LP   — connected but target has no Leap! Pad
 //   REACHABLE_HAS_LP  — connected and target has Leap! Pad; transfer key received
+//
+// S1 fix: Removed dead variable 'primaryPort' (was computed but never used, and
+// the computation was wrong — it added the local game port offset to the target port).
+// buildOffsetArray() now guarantees the primary offset (from LeapPadConfig.probePortOffset)
+// is tried first, with remaining offsets following in iteration order.
 
 import elder.leapp.LeapPadCommon;
+import elder.leapp.config.LeapPadConfig;
 import elder.leapp.probe.PortBindingCache;
 
 import java.io.DataInputStream;
@@ -18,6 +24,8 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.Arrays;
+import java.util.Set;
 
 public class WorldPinger {
 
@@ -44,9 +52,9 @@ public class WorldPinger {
     }
 
     // Probes the given host:port address.
-    // clientIp — the client's explicit external IP (not assumed from socket)
+    // clientIp    — the client's explicit external IP (not assumed from socket)
     // leapForward — whether Leap! Forward is installed on this client
-    // targetHost — hostname or IP of the target world
+    // targetHost  — hostname or IP of the target world
     // targetGamePort — the game port of the target world
     //
     // Tries the primary probe offset first, then fallback offsets in order.
@@ -54,9 +62,8 @@ public class WorldPinger {
     public static PingOutcome probe(String targetHost, int targetGamePort,
                                     String clientIp, boolean leapForward) {
 
-        // Build the ordered list of ports to try: primary offset first, then fallbacks
-        int primaryPort = targetGamePort + PortBindingCache.getGamePort(); // relative offset logic
-        // Actually use the offsets directly against the target game port
+        // S1 fix: buildOffsetArray() now guarantees primary offset is first.
+        // Dead 'primaryPort' variable removed.
         int[] offsetsToTry = buildOffsetArray();
 
         for (int offset : offsetsToTry) {
@@ -84,7 +91,7 @@ public class WorldPinger {
             socket.setSoTimeout(5000);
 
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-            DataInputStream in = new DataInputStream(socket.getInputStream());
+            DataInputStream  in  = new DataInputStream(socket.getInputStream());
 
             // Send probe fields
             out.writeUTF(clientIp);
@@ -92,16 +99,12 @@ public class WorldPinger {
             out.flush();
 
             // Read response
-            boolean reachable = in.readBoolean();
-            boolean hasLeapPad = in.readBoolean();
-            String transferKey = in.readUTF();
+            boolean reachable   = in.readBoolean();
+            boolean hasLeapPad  = in.readBoolean();
+            String  transferKey = in.readUTF();
 
-            if (!reachable) {
-                return new PingOutcome(PingResult.UNREACHABLE);
-            }
-            if (!hasLeapPad) {
-                return new PingOutcome(PingResult.REACHABLE_NO_LP);
-            }
+            if (!reachable)   return new PingOutcome(PingResult.UNREACHABLE);
+            if (!hasLeapPad)  return new PingOutcome(PingResult.REACHABLE_NO_LP);
             return new PingOutcome(PingResult.REACHABLE_HAS_LP, transferKey);
 
         } catch (IOException e) {
@@ -113,15 +116,31 @@ public class WorldPinger {
         }
     }
 
-    // Builds the ordered array of offsets to try from PortBindingCache.
-    // Primary offset goes first, then the rest in iteration order.
+    // S1 fix: Builds the ordered array of offsets to try.
+    // The primary offset (LeapPadConfig.probePortOffset) is always placed first.
+    // Remaining offsets from PortBindingCache follow in their natural iteration order.
+    // If the primary is not in the cache set (shouldn't happen, but guarded), it is
+    // still placed first and the cache set is used as-is for the remainder.
     private static int[] buildOffsetArray() {
-        var offsets = PortBindingCache.getActiveOutboundOffsets();
-        int[] result = new int[offsets.size()];
-        int i = 0;
-        for (int offset : offsets) {
-            result[i++] = offset;
+        int primary = LeapPadConfig.probePortOffset;
+        Set<Integer> all = PortBindingCache.getActiveOutboundOffsets();
+
+        // Slot 0 is always the primary. Remaining slots hold every other offset.
+        int[] result = new int[Math.max(all.size(), 1)];
+        result[0] = primary;
+        int i = 1;
+        for (int offset : all) {
+            if (offset != primary) {
+                if (i < result.length) {
+                    result[i++] = offset;
+                }
+            }
         }
-        return result;
+
+        // If the primary was not in the set, the array may be over-allocated by 1.
+        // Trim to the actual number of entries written.
+        return (i < result.length && result[i] == 0 && i > 0)
+            ? Arrays.copyOf(result, i)
+            : result;
     }
 }

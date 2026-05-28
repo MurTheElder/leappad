@@ -16,12 +16,19 @@ package elder.leapp.portal;
 //   - UUID deconfliction during handshake
 //   - /portalid remove (by coord or by UUID)
 //   - World address storage (so LeapPortalBlock can read this world's own address)
+//   - Pending mirror portal tracking for UUID finalisation at step 10 (ST4)
+//
+// S5 fix: NbtIo.read(File) and NbtIo.write(CompoundTag, File) replaced with
+// NbtIo.readCompressed(Path, NbtAccounter) and NbtIo.writeCompressed(CompoundTag, Path).
+// The registry file is now written gzip-compressed. Any portal_registry.dat written
+// by pre-fix builds will not load correctly — safe to ignore, no live data exists yet.
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.config.LeapPadConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.Tag;
 
@@ -56,6 +63,12 @@ public class PortalRegistry {
     // BlockPos → active UUID  (in-memory only, rebuilt from registry on world load)
     private static final Map<BlockPos, String> reverseMap = new ConcurrentHashMap<>();
 
+    // playerUuid → mirror portal active UUID
+    // Populated by MirrorPortalManager when it places a mirror portal (step 7).
+    // Read by updateMirrorPortalUuid() when the agreed UUID arrives (step 10 / ST4).
+    // Entries are removed once finalised or on session failure.
+    private static final Map<String, String> pendingMirrorPortals = new ConcurrentHashMap<>();
+
     // This world's own connection address — set by /leappad ip or on world open
     private static String thisWorldAddress = "";
 
@@ -71,6 +84,7 @@ public class PortalRegistry {
         registryPath = worldSaveDir.resolve("leappad").resolve("portal_registry.dat");
         registry.clear();
         reverseMap.clear();
+        pendingMirrorPortals.clear();
 
         if (!Files.exists(registryPath)) {
             LeapPadCommon.LOGGER.info("[Leap! Pad] No portal_registry.dat found — starting fresh.");
@@ -78,7 +92,8 @@ public class PortalRegistry {
         }
 
         try {
-            CompoundTag root = NbtIo.read(registryPath.toFile());
+            // S5 fix: use Path-based NbtIo.readCompressed instead of deprecated File-based read
+            CompoundTag root = NbtIo.readCompressed(registryPath, NbtAccounter.unlimitedHeap());
             if (root == null) return;
 
             ListTag entries = root.getList("portals", Tag.TAG_COMPOUND);
@@ -136,7 +151,8 @@ public class PortalRegistry {
             }
 
             root.put("portals", entries);
-            NbtIo.write(root, registryPath.toFile());
+            // S5 fix: use Path-based NbtIo.writeCompressed instead of deprecated File-based write
+            NbtIo.writeCompressed(root, registryPath);
         } catch (IOException e) {
             LeapPadCommon.LOGGER.error("[Leap! Pad] Failed to save portal_registry.dat: {}", e.getMessage());
         }
@@ -232,6 +248,47 @@ public class PortalRegistry {
             reverseMap.put(pos, newActiveUuid);
         }
         save();
+    }
+
+    // -------------------------------------------------------
+    // Pending mirror portal tracking — ST4 support
+    // -------------------------------------------------------
+
+    // Records that a mirror portal was placed for a connecting player.
+    // Called by MirrorPortalManager after it places and registers the portal.
+    // The UUID stored here is the provisional one assigned at placement time;
+    // it will be replaced with the agreed UUID when updateMirrorPortalUuid() fires.
+    public static void registerPendingMirrorPortal(String playerUuid, String provisionalPortalUuid) {
+        pendingMirrorPortals.put(playerUuid, provisionalPortalUuid);
+    }
+
+    // Finalises a mirror portal's UUID after deconfliction (step 10 / ST4).
+    // Replaces the provisional UUID that was assigned at placement with the
+    // agreed UUID negotiated between client and host.
+    // Called from FabricNetworking when the uuid_confirm packet arrives.
+    public static void updateMirrorPortalUuid(String playerUuid, String agreedUuid) {
+        String provisionalUuid = pendingMirrorPortals.remove(playerUuid);
+        if (provisionalUuid == null) {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] updateMirrorPortalUuid called for player {} but no pending portal found.",
+                playerUuid
+            );
+            return;
+        }
+        // If the provisional and agreed UUIDs are the same, no rename needed
+        if (!provisionalUuid.equals(agreedUuid)) {
+            updatePortalUuid(provisionalUuid, agreedUuid);
+        }
+        LeapPadCommon.LOGGER.info(
+            "[Leap! Pad] Mirror portal UUID finalised for player {}: {} → {}",
+            playerUuid, provisionalUuid, agreedUuid
+        );
+    }
+
+    // Clears the pending mirror portal entry for a player.
+    // Called on session failure to avoid stale entries building up.
+    public static void clearPendingMirrorPortal(String playerUuid) {
+        pendingMirrorPortals.remove(playerUuid);
     }
 
     // -------------------------------------------------------
