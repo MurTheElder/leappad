@@ -4,7 +4,6 @@
 # and commits them directly to the repository.
 # After this runs successfully, you can delete this workflow file if you like —
 # it only ever needs to run once.
-
 name: Setup Gradle Wrapper
 
 on:
