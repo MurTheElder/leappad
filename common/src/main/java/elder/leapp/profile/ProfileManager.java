@@ -8,16 +8,24 @@ package elder.leapp.profile;
 //   - The active profile string (cleared on title screen render, with one-cycle suppression)
 //   - Dat blob I/O — writing the blob to playerdata/[UUID].dat on join,
 //     capturing received dat on push from host
-//   - Leap! Forward presence flag (detected once at launch)
+//   - Leap! Forward presence flag (set once at launch by the caller)
 //   - Cached external IP (fetched async by FabricCommandRegistry, stored here for reuse)
 //
 // Client-side only. Called from LeapPadFabricClient and TransferOrchestrator.
+//
+// S4 fix: Removed FabricLoader calls from this class. init() now takes profilesDir
+// and leapForwardPresent as parameters, supplied by LeapPadFabricClient. This keeps
+// common code free of loader-specific imports and makes ProfileManager reusable
+// for the NeoForge edition without modification.
+//
+// S5 fix: NbtIo.read(File) and NbtIo.write(CompoundTag, File) replaced with
+// NbtIo.readCompressed(Path, NbtAccounter) and NbtIo.writeCompressed(CompoundTag, Path).
 
 import elder.leapp.LeapPadCommon;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,7 +43,7 @@ public class ProfileManager {
     private static String activeProfileUuid = "";
 
     // Whether Leap! Forward is installed on this client.
-    // Detected once at launch by checking if the leapforward mod is loaded.
+    // Set by the caller (LeapPadFabricClient) at launch via init().
     private static boolean leapForwardPresent = false;
 
     // Cached external IP — fetched async by FabricCommandRegistry, stored here for reuse
@@ -46,13 +54,13 @@ public class ProfileManager {
     // Lifecycle
     // -------------------------------------------------------
 
-    // Called from LeapPadFabricClient.onInitializeClient()
-    // Sets the profiles directory and loads all saved profiles from disk.
-    public static void init() {
-        // Resolve .minecraft/leappad/profiles/
-        // The game directory is the standard .minecraft folder
-        Path gameDir = net.fabricmc.loader.api.FabricLoader.getInstance().getGameDir();
-        profilesDir = gameDir.resolve("leappad").resolve("profiles");
+    // Called from LeapPadFabricClient.onInitializeClient().
+    // S4 fix: profilesDir and leapForwardPresent are now passed in by the caller
+    // rather than resolved here via FabricLoader. This removes the Fabric API
+    // dependency from common code.
+    public static void init(Path profilesDir, boolean leapForwardPresent) {
+        ProfileManager.profilesDir = profilesDir;
+        ProfileManager.leapForwardPresent = leapForwardPresent;
 
         try {
             Files.createDirectories(profilesDir);
@@ -62,10 +70,6 @@ public class ProfileManager {
         }
 
         loadAllFromDisk();
-
-        // Detect Leap! Forward presence
-        leapForwardPresent = net.fabricmc.loader.api.FabricLoader.getInstance()
-            .isModLoaded("leapforward");
 
         LeapPadCommon.LOGGER.info(
             "[Leap! Pad] ProfileManager initialized. {} profile(s) loaded. Leap! Forward: {}",
@@ -218,22 +222,22 @@ public class ProfileManager {
         profiles.clear();
         if (profilesDir == null || !Files.exists(profilesDir)) return;
 
-        File[] files = profilesDir.toFile().listFiles(
-            (dir, name) -> name.endsWith(".nbt")
-        );
-        if (files == null) return;
-
-        for (File file : files) {
-            try {
-                CompoundTag tag = NbtIo.read(file);
-                if (tag == null) continue;
-                CharacterProfile profile = CharacterProfile.fromNbt(tag);
-                profiles.put(profile.profileUuid, profile);
-            } catch (IOException e) {
-                LeapPadCommon.LOGGER.warn(
-                    "[Leap! Pad] Could not load profile file {}: {}", file.getName(), e.getMessage()
-                );
+        try (var stream = Files.newDirectoryStream(profilesDir, "*.nbt")) {
+            for (Path file : stream) {
+                try {
+                    // S5 fix: use Path-based NbtIo.readCompressed instead of deprecated File read
+                    CompoundTag tag = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+                    if (tag == null) continue;
+                    CharacterProfile profile = CharacterProfile.fromNbt(tag);
+                    profiles.put(profile.profileUuid, profile);
+                } catch (IOException e) {
+                    LeapPadCommon.LOGGER.warn(
+                        "[Leap! Pad] Could not load profile file {}: {}", file.getFileName(), e.getMessage()
+                    );
+                }
             }
+        } catch (IOException e) {
+            LeapPadCommon.LOGGER.error("[Leap! Pad] Could not read profiles directory: {}", e.getMessage());
         }
     }
 
@@ -241,7 +245,8 @@ public class ProfileManager {
         if (profilesDir == null) return;
         Path file = profilesDir.resolve(profile.profileUuid + ".nbt");
         try {
-            NbtIo.write(profile.toNbt(), file.toFile());
+            // S5 fix: use Path-based NbtIo.writeCompressed instead of deprecated File write
+            NbtIo.writeCompressed(profile.toNbt(), file);
         } catch (IOException e) {
             LeapPadCommon.LOGGER.error(
                 "[Leap! Pad] Could not save profile {}: {}", profile.profileUuid, e.getMessage()
