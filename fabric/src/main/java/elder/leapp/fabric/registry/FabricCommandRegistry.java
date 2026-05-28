@@ -10,14 +10,18 @@ package elder.leapp.fabric.registry;
 //
 // Port commands operate on PortBindingCache only — the config file is never written at runtime.
 // {PORT} and {n} syntax accepts a single value or colon-separated set (e.g. 25566:25567:25568).
+//
+// M1 fix: /leappad version now reads the version string from fabric.mod.json via
+// FabricLoader rather than getImplementationVersion(), which returns null during
+// development builds produced by GitHub Actions.
 
 import com.mojang.brigadier.CommandDispatcher;
-import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import elder.leapp.LeapPadCommon;
 import elder.leapp.portal.PortalRegistry;
 import elder.leapp.probe.PortBindingCache;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
@@ -203,13 +207,13 @@ public class FabricCommandRegistry {
 
                         // Broadcast to all online OPs for logging
                         String message = "[Leap! Pad] This world's address: " + address;
-                        source.getServer().execute(() -> {
+                        source.getServer().execute(() ->
                             source.getServer().getPlayerList().getPlayers().forEach(player -> {
                                 if (player.hasPermissions(2)) {
                                     player.sendSystemMessage(Component.literal(message));
                                 }
-                            });
-                        });
+                            })
+                        );
                     });
                     return 1;
                 })
@@ -219,7 +223,7 @@ public class FabricCommandRegistry {
             .then(Commands.literal("status")
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
-                    int portCount = PortBindingCache.getBoundPortCount();
+                    int portCount   = PortBindingCache.getBoundPortCount();
                     int portalCount = PortalRegistry.getAll().size();
                     ctx.getSource().sendSuccess(
                         () -> Component.literal(
@@ -235,8 +239,7 @@ public class FabricCommandRegistry {
             .then(Commands.literal("reload")
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
-                    // Config reload — re-reads leappad.json into the runtime cache
-                    // Full reload logic wired when config hot-reload support is added
+                    // TODO ST7: implement config hot-reload
                     ctx.getSource().sendSuccess(
                         () -> Component.literal("[Leap! Pad] Config reloaded."), true
                     );
@@ -245,11 +248,16 @@ public class FabricCommandRegistry {
             )
 
             // /leappad version — available to all players
+            // M1 fix: reads version from fabric.mod.json via FabricLoader instead of
+            // getImplementationVersion(), which returns null in development builds.
             .then(Commands.literal("version")
                 .executes(ctx -> {
+                    String version = FabricLoader.getInstance()
+                        .getModContainer("leappad")
+                        .map(c -> c.getMetadata().getVersion().getFriendlyString())
+                        .orElse("unknown");
                     ctx.getSource().sendSuccess(
-                        () -> Component.literal("[Leap! Pad] Version " +
-                            LeapPadCommon.class.getPackage().getImplementationVersion()), false
+                        () -> Component.literal("[Leap! Pad] Version " + version), false
                     );
                     return 1;
                 })
@@ -269,8 +277,7 @@ public class FabricCommandRegistry {
             .then(Commands.literal("get")
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
-                    // Block targeting via crosshair is wired when the hit result is available
-                    // For now, command registers successfully
+                    // TODO ST5: wire crosshair block hit result when available
                     ctx.getSource().sendSuccess(
                         () -> Component.literal("[Leap! Pad] Target a portal block to get its UUID."), false
                     );
@@ -308,7 +315,7 @@ public class FabricCommandRegistry {
                                 );
                             } else {
                                 ctx.getSource().sendFailure(
-                                    Component.literal("[Leap! Pad] UUID not found: " + oldUuid)
+                                    Component.literal("[Leap! Pad] UUID not found or already taken: " + oldUuid)
                                 );
                             }
                             return success ? 1 : 0;
@@ -323,7 +330,6 @@ public class FabricCommandRegistry {
                 .then(Commands.argument("target", StringArgumentType.greedyString())
                     .executes(ctx -> {
                         String target = StringArgumentType.getString(ctx, "target");
-                        // Attempt UUID removal first, then coord removal
                         boolean removed = PortalRegistry.removeByUuid(target);
                         if (removed) {
                             ctx.getSource().sendSuccess(
@@ -369,7 +375,7 @@ public class FabricCommandRegistry {
             .then(Commands.literal("registry")
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
-                    // Book generation wired when item giving is implemented
+                    // TODO ST6: implement registry book generation
                     ctx.getSource().sendSuccess(
                         () -> Component.literal("[Leap! Pad] Registry book — coming in next build step."), false
                     );
@@ -383,11 +389,11 @@ public class FabricCommandRegistry {
                 .then(Commands.argument("uuid", StringArgumentType.word())
                     .then(Commands.argument("nickname", StringArgumentType.greedyString())
                         .executes(ctx -> {
-                            String uuid = StringArgumentType.getString(ctx, "uuid");
+                            String uuid     = StringArgumentType.getString(ctx, "uuid");
                             String nickname = StringArgumentType.getString(ctx, "nickname");
                             CommandSourceStack source = ctx.getSource();
 
-                            String existing = PortalRegistry.getNickname(uuid);
+                            String existing   = PortalRegistry.getNickname(uuid);
                             boolean hasExisting = existing != null && !existing.isEmpty();
 
                             // OP required if nickname already exists
@@ -421,7 +427,7 @@ public class FabricCommandRegistry {
     // Helpers
     // -------------------------------------------------------
 
-    // Parses a colon-separated port string into an array of ints
+    // Parses a colon-separated port string into an array of ints.
     // e.g. "25566:25567:25568" → [25566, 25567, 25568]
     private static int[] parsePorts(String input) {
         String[] parts = input.trim().split(":");
@@ -470,8 +476,8 @@ public class FabricCommandRegistry {
         return true;
     }
 
-    // Fetches this machine's external IP from api.ipify.org
-    // Runs on a background thread — never call from the main thread
+    // Fetches this machine's external IP from api.ipify.org.
+    // Runs on a background thread — never call from the main thread.
     private static String fetchExternalIp() {
         try {
             URL url = new URL("https://api.ipify.org");
