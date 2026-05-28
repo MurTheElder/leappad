@@ -35,12 +35,11 @@ jobs:
 
       - name: Find and verify jar
         run: |
-          echo "Searching for jar in fabric/build/libs/:"
+          echo "All jars in fabric/build/libs/:"
           find fabric/build/libs -type f -name "*.jar" | sort
-          JAR_PATH=$(find fabric/build/libs -type f -name "leappad-fabric-*.jar" ! -name "*-sources.jar" ! -name "*-dev.jar" | head -1)
+          JAR_PATH=$(find fabric/build/libs -type f -name "*.jar" ! -name "*-sources.jar" ! -name "*-dev.jar" | head -1)
           if [ -z "$JAR_PATH" ]; then
-            echo "ERROR: No jar found. All files in fabric/build/libs/:"
-            find fabric/build/libs -type f | sort
+            echo "ERROR: No jar found in fabric/build/libs/"
             exit 1
           fi
           echo "Jar found: $JAR_PATH"
