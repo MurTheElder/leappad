@@ -1,26 +1,28 @@
-// Leap! Pad — Common Subproject Build
-// This subproject contains all shared logic.
-// It may ONLY reference vanilla Minecraft classes and Cloth Config.
-// No Fabric Loader, no Fabric API here — those belong in fabric/build.gradle.
-// This ensures the common code stays genuinely portable.
-
 plugins {
     id 'fabric-loom' version "${fabric_loom_version}"
 }
 
-dependencies {
-    // Minecraft itself — provides the vanilla classes common code can reference
-    minecraft "com.mojang:minecraft:${minecraft_version}"
+repositories {
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
+    // Cloth Config lives here
+    maven {
+        name = 'Shedaniel'
+        url = 'https://maven.shedaniel.me/'
+    }
+    mavenCentral()
+}
 
-    // Yarn mappings — human-readable names for Minecraft's obfuscated code
-    // Using Parchment-flavoured mappings for better parameter names
+dependencies {
+    minecraft "com.mojang:minecraft:${minecraft_version}"
     mappings loom.officialMojangMappings()
 
-    // Fabric Loader is listed here only so Loom can compile against it.
-    // Common code must NOT call Fabric-specific APIs directly.
+    // Fabric Loader compile-only so Loom can resolve common code
     modCompileOnly "net.fabricmc:fabric-loader:${fabric_loader_version}"
 
-    // Cloth Config — provides the config UI framework used by LeapPadConfig
+    // Cloth Config
     modApi("me.shedaniel.cloth:cloth-config-fabric:${cloth_config_version}") {
         exclude(group: "net.fabricmc.fabric-api")
     }
