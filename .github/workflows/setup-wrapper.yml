@@ -1,9 +1,3 @@
-# Leap! Pad — Gradle Wrapper Setup
-# Run this ONCE before ever triggering the main build workflow.
-# It installs Gradle, generates the gradlew wrapper script and gradle-wrapper.jar,
-# and commits them directly to the repository.
-# After this runs successfully, you can delete this workflow file if you like —
-# it only ever needs to run once.
 name: Setup Gradle Wrapper
 
 on:
