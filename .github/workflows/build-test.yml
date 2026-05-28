@@ -1,0 +1,61 @@
+name: Test Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build Fabric jar
+        run: ./gradlew :fabric:build --no-daemon
+
+      - name: Verify jar was produced
+        run: |
+          JAR=$(find fabric/build/libs -name "*.jar" ! -name "*-dev.jar" ! -name "*-sources.jar" | head -1)
+          if [ -z "$JAR" ]; then
+            echo "ERROR: No jar file found in fabric/build/libs"
+            exit 1
+          fi
+          echo "JAR=$JAR" >> $GITHUB_ENV
+          echo "Jar found: $JAR"
+
+      - name: Verify jar is a valid zip
+        run: zip -T "$JAR"
+
+      - name: Verify jar contains fabric.mod.json
+        run: |
+          if ! unzip -l "$JAR" | grep -q "fabric.mod.json"; then
+            echo "ERROR: fabric.mod.json not found in jar — Fabric Loader will not recognise this as a mod"
+            exit 1
+          fi
+          echo "fabric.mod.json present."
+
+      - name: Upload jar as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-build-jar
+          path: ${{ env.JAR }}
+          retention-days: 7
