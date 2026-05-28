@@ -7,7 +7,6 @@ repositories {
         name = 'Fabric'
         url = 'https://maven.fabricmc.net/'
     }
-    // Cloth Config lives here
     maven {
         name = 'Shedaniel'
         url = 'https://maven.shedaniel.me/'
@@ -35,9 +34,11 @@ loom {
     }
 }
 
-jar {
-    archiveBaseName = 'leappad-fabric'
-    archiveVersion = mod_version
+// Override the default archive name so the output is leappad-fabric-0.1.0.jar
+base {
+    archivesName = 'leappad-fabric'
+}
 
+jar {
     from project(':common').sourceSets.main.output
 }
