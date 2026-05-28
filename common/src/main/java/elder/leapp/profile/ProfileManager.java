@@ -18,12 +18,12 @@ package elder.leapp.profile;
 // common code free of loader-specific imports and makes ProfileManager reusable
 // for the NeoForge edition without modification.
 //
-// S5 fix: NbtIo.read(File) and NbtIo.write(CompoundTag, File) replaced with
-// NbtIo.readCompressed(Path, NbtAccounter) and NbtIo.writeCompressed(CompoundTag, Path).
+// S5 note: NbtIo File-based read/write calls are deprecated in 1.20.1 but are the
+// only available overloads at this Minecraft version. Path-based and NbtAccounter-based
+// overloads do not exist until later versions. The deprecation warning is harmless.
 
 import elder.leapp.LeapPadCommon;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 
 import java.io.IOException;
@@ -225,8 +225,8 @@ public class ProfileManager {
         try (var stream = Files.newDirectoryStream(profilesDir, "*.nbt")) {
             for (Path file : stream) {
                 try {
-                    // S5 fix: use Path-based NbtIo.readCompressed instead of deprecated File read
-                    CompoundTag tag = NbtIo.readCompressed(file, NbtAccounter.unlimitedHeap());
+                    // NbtIo.read(File) is deprecated in 1.20.1 but correct for this version.
+                    CompoundTag tag = NbtIo.read(file.toFile());
                     if (tag == null) continue;
                     CharacterProfile profile = CharacterProfile.fromNbt(tag);
                     profiles.put(profile.profileUuid, profile);
@@ -245,8 +245,8 @@ public class ProfileManager {
         if (profilesDir == null) return;
         Path file = profilesDir.resolve(profile.profileUuid + ".nbt");
         try {
-            // S5 fix: use Path-based NbtIo.writeCompressed instead of deprecated File write
-            NbtIo.writeCompressed(profile.toNbt(), file);
+            // NbtIo.write(CompoundTag, File) is deprecated in 1.20.1 but correct for this version.
+            NbtIo.write(profile.toNbt(), file.toFile());
         } catch (IOException e) {
             LeapPadCommon.LOGGER.error(
                 "[Leap! Pad] Could not save profile {}: {}", profile.profileUuid, e.getMessage()
