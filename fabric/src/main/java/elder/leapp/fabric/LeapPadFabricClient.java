@@ -139,17 +139,21 @@ public class LeapPadFabricClient implements ClientModInitializer {
             }
 
             ServerAddress addr = new ServerAddress(host, port);
-            ServerData serverData = new ServerData(
-                "leap", targetAddress, ServerData.Type.OTHER
-            );
+            // In 1.20.1, ServerData takes (String name, String ip, boolean isLan).
+            // false = not a LAN connection.
+            // ServerData.Type does not exist until a later Minecraft version.
+            ServerData serverData = new ServerData("leap", targetAddress, false);
 
             // Schedule the vanilla connect on the render thread.
-            // ConnectScreenMixin will intercept this call, read the portal context
-            // we just stored above, and drive the full transfer sequence.
+            // In 1.20.1 there is no static startConnecting() — we construct a ConnectScreen
+            // and call connect() on it. ConnectScreenMixin intercepts connect(), reads the
+            // portal context we stored above, and drives the full transfer sequence.
             Minecraft mc = Minecraft.getInstance();
-            mc.execute(() ->
-                ConnectScreen.startConnecting(mc.screen, mc, addr, serverData, false)
-            );
+            mc.execute(() -> {
+                ConnectScreen screen = new ConnectScreen(mc.screen, mc, serverData);
+                mc.setScreen(screen);
+                screen.connect(mc, addr, serverData);
+            });
         });
 
         LeapPadCommon.LOGGER.info("Leap! Pad (Fabric client) ready.");
