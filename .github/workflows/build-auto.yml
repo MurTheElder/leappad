@@ -45,7 +45,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Fabric jar
-        run: ./gradlew :fabric:build --no-daemon
+        run: ./gradlew :fabric:build --no-daemon --scan
 
       - name: Find and verify jar
         run: |
