@@ -2,23 +2,25 @@ package elder.leapp.fabric;
 
 // LeapPadFabricClient.java
 // The Fabric client-side entry point for Leap! Pad.
-// Fabric calls onInitializeClient() here when the mod loads on the client side.
 //
 // Responsibilities:
 //   - Initialize ProfileManager with resolved paths and Leap! Forward flag (S4)
 //   - Register client-side packet receivers via FabricNetworking
 //   - Register the portal block render layer (C2)
-//   - Inject all four bridge interfaces into TransferOrchestrator (C3):
-//       PacketSender     — delegates outbound packets to FabricNetworking
-//       GateReleaser     — calls ConnectScreenMixin.releaseGate() (D1-B)
-//       PlayerNotifier   — shows messages and screens (stubs for ST1, ST2)
-//       PortalConnectTrigger — stores portal context and triggers vanilla connect (D2-B)
+//   - Inject bridge interfaces into TransferOrchestrator:
+//       PacketSender          — delegates outbound packets to FabricNetworking
+//       VanillaConnectTrigger — calls FabricReconnectHandler at sequence end
+//       PlayerNotifier        — shows messages and screens (stubs for ST1, ST2)
+//   - Inject PortalPacketSender into LeapPortalBlock
+//
+// Removed: GateReleaser, PortalConnectTrigger (replaced by VanillaConnectTrigger
+// and the portal_initiate packet path).
 
 import elder.leapp.LeapPadCommon;
-import elder.leapp.fabric.mixin.ConnectScreenInvoker;
-import elder.leapp.fabric.mixin.ConnectScreenMixin;
 import elder.leapp.fabric.network.FabricNetworking;
 import elder.leapp.fabric.registry.FabricRegistrar;
+import elder.leapp.fabric.transfer.FabricReconnectHandler;
+import elder.leapp.portal.LeapPortalBlock;
 import elder.leapp.profile.ProfileManager;
 import elder.leapp.transfer.TransferOrchestrator;
 import elder.leapp.transfer.TransferSession;
@@ -26,9 +28,6 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ServerData;
-import net.minecraft.client.multiplayer.resolver.ServerAddress;
 
 import java.nio.file.Path;
 
@@ -38,9 +37,8 @@ public class LeapPadFabricClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
 
-        // S4: Resolve profilesDir and leapForwardPresent here in Fabric-specific code
-        // and pass them into ProfileManager.init() rather than letting ProfileManager
-        // call FabricLoader directly. This keeps common code loader-agnostic.
+        // S4: Resolve profilesDir and leapForwardPresent in Fabric-specific code
+        // and pass them into ProfileManager.init() to keep common code loader-agnostic.
         Path profilesDir = FabricLoader.getInstance()
             .getGameDir()
             .resolve("leappad")
@@ -50,22 +48,16 @@ public class LeapPadFabricClient implements ClientModInitializer {
         ProfileManager.init(profilesDir, leapForwardPresent);
 
         // Register all client-side packet receivers.
-        // These handle packets sent from the host world to this client.
         FabricNetworking.registerClientReceivers();
 
-        // C2: Set the portal block render layer to translucent so it renders
-        // as a see-through surface rather than a solid opaque cube.
+        // C2: Set the portal block render layer to translucent.
         FabricRegistrar.registerClientSide();
 
         // -------------------------------------------------------
-        // C3: Inject all four bridge interfaces into TransferOrchestrator.
-        // These allow common code to trigger Fabric-specific behaviour
-        // (packet sends, screen opens, vanilla connect) without importing
-        // Fabric classes directly.
+        // Inject bridge interfaces into TransferOrchestrator.
         // -------------------------------------------------------
 
-        // PacketSender — delegates all outbound packet calls to FabricNetworking.
-        // sendReady is handled via notifyHostReady in PlayerNotifier below.
+        // PacketSender — delegates outbound packet calls to FabricNetworking.
         TransferOrchestrator.setPacketSender(new TransferOrchestrator.PacketSender() {
             public void sendProfileDat(String playerUuid, String profileUuid,
                                        byte[] datBlob, boolean leapForward) {
@@ -79,81 +71,51 @@ public class LeapPadFabricClient implements ClientModInitializer {
             }
         });
 
-        // GateReleaser — calls ConnectScreenMixin.releaseGate(), which arms the
-        // bypass flag and calls ConnectScreenInvoker.invokeConnect() on the render
-        // thread using the stored args from the original intercept (D1-B).
-        TransferOrchestrator.setGateReleaser(playerUuid ->
-            ConnectScreenMixin.releaseGate(playerUuid)
-        );
+        // VanillaConnectTrigger — called when the full sequence is complete.
+        // FabricReconnectHandler disconnects from the current world and calls
+        // method_36877 via ConnectScreenInvoker to open a new ConnectScreen.
+        // ConnectScreenMixin sees the session is COMPLETE and lets it through.
+        TransferOrchestrator.setVanillaConnectTrigger(FabricReconnectHandler.INSTANCE);
 
-        // PlayerNotifier — shows in-game messages and opens screens.
-        // showPortalInactive and showTimeout are message-only; the screen stubs
-        // for warning (ST1) and profile selector (ST2) will be filled when those
-        // screen classes are built in their own build steps.
+        // PlayerNotifier — shows messages and opens screens.
         TransferOrchestrator.setPlayerNotifier(new TransferOrchestrator.PlayerNotifier() {
             public void showPortalInactive(String playerUuid) {
-                // TODO ST: show "Portal is inactive." message to player in chat overlay
-                LeapPadCommon.LOGGER.info("[Leap! Pad] Portal inactive — notify player {}.", playerUuid);
+                // TODO ST: show "Portal is inactive." message to player
+                LeapPadCommon.LOGGER.info(
+                    "[Leap! Pad] Portal inactive — stub notify for {}.", playerUuid
+                );
             }
             public void showNoLeapPad(String playerUuid, String targetAddress) {
-                // TODO ST1: open WarningScreen — implement when WarningScreen class is built
+                // TODO ST1: open WarningScreen
                 LeapPadCommon.LOGGER.info(
-                    "[Leap! Pad] No Leap! Pad on target {} — warning screen stub.", targetAddress
+                    "[Leap! Pad] No Leap! Pad on {} — warning screen stub.", targetAddress
                 );
             }
             public void showTimeout(String playerUuid) {
-                // TODO ST: show "Connection timed out." message to player in chat overlay
-                LeapPadCommon.LOGGER.info("[Leap! Pad] Connection timed out — notify player {}.", playerUuid);
+                // TODO ST: show "Connection timed out." message to player
+                LeapPadCommon.LOGGER.info(
+                    "[Leap! Pad] Connection timed out — stub notify for {}.", playerUuid
+                );
             }
             public void openProfileSelector(String playerUuid) {
-                // TODO ST2: open ProfileSelectorScreen — implement when that class is built
-                LeapPadCommon.LOGGER.info("[Leap! Pad] Profile selector stub for player {}.", playerUuid);
+                // TODO ST2: open ProfileSelectorScreen
+                LeapPadCommon.LOGGER.info(
+                    "[Leap! Pad] Profile selector stub for {}.", playerUuid
+                );
             }
             public void notifyHostReady(String playerUuid, TransferSession session) {
-                // All client pre-connection work is complete — send the READY signal.
-                // The host will echo it back, which releases the gate.
+                // All client pre-connection work is complete — send READY.
+                // Host echoes it back; onReadyEchoReceived triggers the vanilla connect.
                 FabricNetworking.sendReadyToServer(session.transferKey);
             }
         });
 
-        // PortalConnectTrigger — called by LeapPortalBlock.entityInside() (via
-        // TransferOrchestrator.triggerPortalConnect()) when a player walks into a portal.
-        // Stores portal context in ConnectScreenMixin so the mixin can read it on the
-        // next intercept, then triggers a vanilla connect on the render thread (D2-B).
-        TransferOrchestrator.setPortalConnectTrigger((targetAddress, portalUuid, originAddress) -> {
-            // Store portal context — the mixin reads and clears these on intercept
-            ConnectScreenMixin.setPendingPortalContext(portalUuid, originAddress);
-
-            // Parse host and port from the target address string
-            String host;
-            int port;
-            try {
-                int colon = targetAddress.lastIndexOf(':');
-                host = targetAddress.substring(0, colon);
-                port = Integer.parseInt(targetAddress.substring(colon + 1));
-            } catch (Exception e) {
-                LeapPadCommon.LOGGER.error(
-                    "[Leap! Pad] PortalConnectTrigger could not parse address: {}", targetAddress
-                );
-                return;
-            }
-
-            ServerAddress addr = new ServerAddress(host, port);
-            // In 1.20.1, ServerData takes (String name, String ip, boolean isLan).
-            // false = not a LAN connection.
-            // ServerData.Type does not exist until a later Minecraft version.
-            ServerData serverData = new ServerData("leap", targetAddress, false);
-
-            // Trigger vanilla connect using ConnectScreenInvoker.invokeConnect(), which
-            // targets method_36877 by intermediary name. This is the same static factory
-            // both old versions used. mc.screen is passed as the parent — it is null here
-            // since the player is in-world, so ConnectScreen will have no screen to return
-            // to on failure, but the connection itself is unaffected.
-            Minecraft mc = Minecraft.getInstance();
-            mc.execute(() ->
-                ConnectScreenInvoker.invokeConnect(mc.screen, mc, addr, serverData, false)
-            );
-        });
+        // -------------------------------------------------------
+        // Inject PortalPacketSender into LeapPortalBlock.
+        // Used when a player walks into a portal — sends portal_initiate S→C
+        // so the client can start the sequence before any vanilla connect fires.
+        // -------------------------------------------------------
+        LeapPortalBlock.setPortalPacketSender(FabricNetworking.PORTAL_PACKET_SENDER);
 
         LeapPadCommon.LOGGER.info("Leap! Pad (Fabric client) ready.");
     }
