@@ -17,9 +17,9 @@ package elder.leapp.fabric.mixin;
 // Gate release (D1-B):
 //   On first intercept, args are stored in leappad_pendingArgs.
 //   When the orchestrator finishes all pre-connection work, it calls releaseGate().
-//   releaseGate() calls ConnectScreen.connect(Minecraft, ServerAddress, ServerData)
-//   — the public static 3-param method. The mixin intercepts the private instance
-//   connect() that this calls internally, sees the bypass flag, and lets vanilla run.
+//   releaseGate() calls ConnectScreenInvoker.connect(Minecraft, ServerAddress, ServerData)
+//   which exposes the private static connect() via Mixin's @Invoker bypass.
+//   The mixin intercepts that call, sees the bypass flag, clears it, and lets vanilla run.
 //
 // Portal context (D2-B):
 //   LeapPortalBlock does not call the orchestrator directly. Instead it calls
@@ -30,6 +30,7 @@ package elder.leapp.fabric.mixin;
 //   LAN), these fields are null and behaviour is identical to before.
 
 import elder.leapp.LeapPadCommon;
+import elder.leapp.fabric.mixin.ConnectScreenInvoker;
 import elder.leapp.transfer.TransferOrchestrator;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConnectScreen;
@@ -97,15 +98,14 @@ public class ConnectScreenMixin {
         // immediately on the next frame.
         leappad_bypassGate = true;
 
-        // Re-trigger vanilla connect using the public static 3-param method:
-        // ConnectScreen.connect(Minecraft, ServerAddress, ServerData)
-        // Our mixin intercepts the private instance connect() this calls internally;
-        // the bypass flag ensures we let it through on this re-trigger.
+        // Re-trigger vanilla connect via ConnectScreenInvoker, which exposes the
+        // private static connect(Minecraft, ServerAddress, ServerData) through
+        // Mixin's @Invoker access bypass. Called on the render thread.
         Minecraft mc = Minecraft.getInstance();
         final ServerAddress finalAddress = address;
         final ServerData finalServerData = serverData;
         mc.execute(() ->
-            ConnectScreen.connect(mc, finalAddress, finalServerData)
+            ConnectScreenInvoker.connect(mc, finalAddress, finalServerData)
         );
 
         LeapPadCommon.LOGGER.info(
