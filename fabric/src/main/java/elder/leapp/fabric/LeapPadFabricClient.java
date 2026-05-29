@@ -80,7 +80,7 @@ public class LeapPadFabricClient implements ClientModInitializer {
         });
 
         // GateReleaser — calls ConnectScreenMixin.releaseGate(), which arms the
-        // bypass flag and re-triggers ConnectScreen.startConnecting() on the render
+        // bypass flag and calls ConnectScreen.connect() on the render
         // thread using the stored args from the original intercept (D1-B).
         TransferOrchestrator.setGateReleaser(playerUuid ->
             ConnectScreenMixin.releaseGate(playerUuid)
@@ -144,16 +144,17 @@ public class LeapPadFabricClient implements ClientModInitializer {
             // ServerData.Type does not exist until a later Minecraft version.
             ServerData serverData = new ServerData("leap", targetAddress, false);
 
-            // Open a ConnectScreen on the render thread with the target address.
-            // ConnectScreen.init() calls the private connect() method internally —
-            // ConnectScreenMixin intercepts that call, reads the portal context stored
-            // above, and drives the full transfer sequence.
-            // Constructor: ConnectScreen(Screen parent, Minecraft mc, ServerAddress, ServerData)
+            // Trigger vanilla connect using the confirmed public static 5-param method
+            // (method_36877 in intermediary, used by both old versions of this project):
+            // ConnectScreen.connect(Screen, Minecraft, ServerAddress, ServerData, boolean)
+            // The boolean is a quickPlay flag — pass false for normal connections.
+            // ConnectScreenMixin intercepts the private instance connect() that this
+            // calls internally, reads the portal context stored above, and drives
+            // the full transfer sequence.
             Minecraft mc = Minecraft.getInstance();
-            mc.execute(() -> {
-                ConnectScreen screen = new ConnectScreen(mc.screen, mc, addr, serverData);
-                mc.setScreen(screen);
-            });
+            mc.execute(() ->
+                ConnectScreen.connect(mc.screen, mc, addr, serverData, false)
+            );
         });
 
         LeapPadCommon.LOGGER.info("Leap! Pad (Fabric client) ready.");

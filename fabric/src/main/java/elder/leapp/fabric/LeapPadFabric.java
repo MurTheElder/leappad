@@ -89,11 +89,11 @@ public class LeapPadFabric implements ModInitializer {
 
         // Hook the autosave cycle so AutosavePushManager can push player dat on schedule.
         // Minecraft autosaves every 6000 ticks (5 minutes) by default.
-        // We fire onAutosave() at the same interval by checking server.tickCount.
+        // We fire onAutosave() at the same interval by checking server.getTickCount().
         // This must be registered here (not inside SERVER_STARTING) so the listener
         // is active for the entire server lifetime, not just after first world start.
         ServerTickEvents.END_SERVER_TICK.register(server -> {
-            if (server.tickCount % 6000 == 0) {
+            if (server.getTickCount() % 6000 == 0) {
                 AutosavePushManager.onAutosave();
             }
         });
