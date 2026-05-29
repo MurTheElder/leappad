@@ -17,10 +17,11 @@ package elder.leapp.fabric.mixin;
 // Gate release (D1-B):
 //   On first intercept, args are stored in leappad_pendingArgs.
 //   When the orchestrator finishes all pre-connection work, it calls releaseGate().
-//   releaseGate() casts mc.screen (which IS the open ConnectScreen) to
-//   ConnectScreenInvoker and calls invokeConnect() — exposing the private instance
-//   connect() via Mixin's @Invoker bypass. The mixin intercepts that call, sees the
-//   bypass flag, clears it, and lets vanilla run.
+//   releaseGate() calls ConnectScreenInvoker.invokeConnect(mc.screen, mc, address, serverData, false)
+//   which targets method_36877 by intermediary name via @Invoker, bypassing Mojang mapping
+//   access issues. This is the same static factory both old versions of this project used.
+//   The factory opens a new ConnectScreen and initiates the connection internally.
+//   Our @Inject on connect() fires on that new attempt — the bypass flag lets it through.
 //
 // Portal context (D2-B):
 //   LeapPortalBlock does not call the orchestrator directly. Instead it calls
@@ -95,30 +96,20 @@ public class ConnectScreenMixin {
         ServerAddress address   = (ServerAddress) args[0];
         ServerData    serverData = (ServerData)    args[1];
 
-        // Arm the bypass flag before scheduling — the render thread may pick this up
-        // immediately on the next frame.
+        // Arm the bypass flag before scheduling — the volatile write here happens-before
+        // the render thread reads it, so the flag is guaranteed visible when the mixin fires.
         leappad_bypassGate = true;
 
-        // Re-trigger vanilla connect by casting the currently-open ConnectScreen
-        // to ConnectScreenInvoker and calling invokeConnect(). This exposes the
-        // private instance connect() via Mixin's @Invoker bypass.
-        // mc.screen is guaranteed to be a ConnectScreen here — the gate only arms
-        // when connect() fires, which only happens inside an open ConnectScreen.
-        // The instanceof check guards against the edge case where the player
-        // closes the screen manually before the gate releases.
+        // Re-trigger vanilla connect using ConnectScreenInvoker.invokeConnect(), which
+        // targets method_36877 by intermediary name. This is the same static factory
+        // both old versions used. mc.screen is passed as the parent so ConnectScreen
+        // has a screen to return to if the connection fails.
         Minecraft mc = Minecraft.getInstance();
         final ServerAddress finalAddress = address;
         final ServerData finalServerData = serverData;
-        mc.execute(() -> {
-            if (mc.screen instanceof ConnectScreenInvoker invoker) {
-                invoker.invokeConnect(mc, finalAddress, finalServerData);
-            } else {
-                LeapPadCommon.LOGGER.warn(
-                    "[Leap! Pad] releaseGate: mc.screen is not a ConnectScreen — " +
-                    "player may have closed the connecting screen. Gate release aborted."
-                );
-            }
-        });
+        mc.execute(() ->
+            ConnectScreenInvoker.invokeConnect(mc.screen, mc, finalAddress, finalServerData, false)
+        );
 
         LeapPadCommon.LOGGER.info(
             "[Leap! Pad] Gate released for player {} — vanilla connect re-triggered.", playerUuid
