@@ -1,179 +1,100 @@
 package elder.leapp.fabric.mixin;
 
 // ConnectScreenMixin.java
-// The pre-connection gate for Leap! Pad.
-// Targets vanilla's ConnectScreen — the screen shown when Minecraft is
-// in the process of connecting to a multiplayer world.
+// Injects into method_36877 (ConnectScreen's static connect factory) to intercept
+// direct connect and server list connection attempts before vanilla runs.
 //
-// This Mixin intercepts the connection attempt at the earliest possible point,
-// before anything vanilla runs, and hands off to TransferOrchestrator.
-// It makes NO routing decisions itself — all logic lives in the orchestrator.
+// Flow:
+//   1. Player clicks join — vanilla calls method_36877(Screen, Minecraft, ServerAddress, ServerData, boolean)
+//   2. This mixin fires at HEAD, cancels the call, and passes the address/serverData
+//      to TransferOrchestrator.onConnectionAttempt() on a background thread.
+//   3. The orchestrator runs the full pre-connection sequence (probe, profile selector,
+//      dat send, host prep, UUID deconfliction, READY handshake).
+//   4. When complete, FabricReconnectHandler.connect() disconnects from the current
+//      world and calls method_36877 again via ConnectScreenInvoker.
+//   5. This mixin fires again. This time TransferOrchestrator.isSessionComplete()
+//      returns true — the mixin does NOT cancel, and vanilla connect runs normally.
+//   6. TransferOrchestrator.onVanillaConnectCompleted() clears the session.
 //
-// This is the single hook point that all connection types go through:
-// portal walk-in, direct connect, server list click, and LAN join.
-// Leap! Forward and Leap! Backwards also register their hooks here
-// rather than writing their own Mixins.
+// Portal path:
+//   The portal path does NOT go through this mixin on the initial trigger.
+//   LeapPortalBlock sends a leappad:portal_initiate packet → client calls
+//   onConnectionAttempt() directly. The sequence runs. FabricReconnectHandler
+//   calls method_36877 at the end, which fires this mixin at step 4 above.
+//   At that point the session is COMPLETE and the mixin lets it through.
 //
-// Gate release (D1-B):
-//   On first intercept, args are stored in leappad_pendingArgs.
-//   When the orchestrator finishes all pre-connection work, it calls releaseGate().
-//   releaseGate() calls ConnectScreenInvoker.invokeConnect(mc.screen, mc, address, serverData, false)
-//   which targets method_36877 by intermediary name via @Invoker, bypassing Mojang mapping
-//   access issues. This is the same static factory both old versions of this project used.
-//   The factory opens a new ConnectScreen and initiates the connection internally.
-//   Our @Inject on connect() fires on that new attempt — the bypass flag lets it through.
-//
-// Portal context (D2-B):
-//   LeapPortalBlock does not call the orchestrator directly. Instead it calls
-//   TransferOrchestrator.triggerPortalConnect(), which (via the PortalConnectTrigger
-//   bridge) calls setPendingPortalContext() here and then triggers a vanilla connect.
-//   On intercept, the mixin reads and clears the portal context fields and passes them
-//   to onConnectionAttempt(). For non-portal connections (direct connect, server list,
-//   LAN), these fields are null and behaviour is identical to before.
+// remap = false: method_36877 is referenced by intermediary name to avoid
+// Mojang mapping resolution issues.
 
 import elder.leapp.LeapPadCommon;
-import elder.leapp.fabric.mixin.ConnectScreenInvoker;
 import elder.leapp.transfer.TransferOrchestrator;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.client.gui.screens.ConnectScreen;
 
 @Mixin(ConnectScreen.class)
 public class ConnectScreenMixin {
 
-    // -------------------------------------------------------
-    // Static state — gate release (D1-B)
-    // -------------------------------------------------------
+    // Inject at the HEAD of method_36877 — the static factory that opens
+    // ConnectScreen and initiates the connection. remap = false so Mixin
+    // resolves by intermediary name rather than Mojang-mapped name.
+    @Inject(
+        method = "method_36877(Lnet/minecraft/class_437;Lnet/minecraft/class_310;" +
+                 "Lnet/minecraft/class_639;Lnet/minecraft/class_642;Z)V",
+        at = @At("HEAD"),
+        cancellable = true,
+        remap = false
+    )
+    private static void leappad_interceptConnect(Screen parent, Minecraft minecraft,
+                                                  ServerAddress address, ServerData serverData,
+                                                  boolean quickPlay, CallbackInfo ci) {
 
-    // Stores the ServerAddress and ServerData from the intercepted call,
-    // keyed by player UUID. Held until releaseGate() fires, then used
-    // to re-trigger the vanilla connect.
-    private static final Map<String, Object[]> leappad_pendingArgs = new ConcurrentHashMap<>();
+        // Identify the player. On a listen server / integrated server context,
+        // minecraft.player is the local player.
+        if (minecraft.player == null) {
+            // No player present — this is an early-launch call before the player exists.
+            // Let vanilla run normally.
+            return;
+        }
 
-    // When true, the next intercept bypasses all Leap! Pad logic and lets vanilla run.
-    // Set from a background thread by releaseGate(); read from the render thread in the
-    // injection. Must be volatile to guarantee immediate visibility across threads.
-    private static volatile boolean leappad_bypassGate = false;
+        String playerUuid = minecraft.player.getUUID().toString();
 
-    // -------------------------------------------------------
-    // Static state — portal context (D2-B)
-    // -------------------------------------------------------
-
-    // Set by setPendingPortalContext() (called from the PortalConnectTrigger bridge)
-    // before a portal-triggered vanilla connect. Read and cleared on the next intercept.
-    // volatile — written from the server thread (entity tick), read from the render thread.
-    private static volatile String leappad_pendingPortalUuid = null;
-    private static volatile String leappad_pendingOriginAddress = null;
-
-    // -------------------------------------------------------
-    // Static methods — called by bridge implementations in LeapPadFabricClient
-    // -------------------------------------------------------
-
-    // Called by the GateReleaser bridge when the orchestrator finishes all
-    // pre-connection work and the player is ready to join.
-    // Retrieves stored connect args, arms the bypass flag, and schedules
-    // the vanilla connect re-trigger on the render thread.
-    public static void releaseGate(String playerUuid) {
-        Object[] args = leappad_pendingArgs.remove(playerUuid);
-        if (args == null) {
-            // This would mean releaseGate was called with no matching stored session.
-            // Log it so we can diagnose if it ever happens.
-            LeapPadCommon.LOGGER.warn(
-                "[Leap! Pad] releaseGate called for player {} but no pending connect args found.",
+        // Check if the sequence is already complete for this player.
+        // This happens when FabricReconnectHandler calls method_36877 after all
+        // pre-arrival work is done. Let the call through and clear the session.
+        if (TransferOrchestrator.isSessionComplete(playerUuid)) {
+            LeapPadCommon.LOGGER.info(
+                "[Leap! Pad] Session complete for player {} — passing vanilla connect through.",
                 playerUuid
             );
-            return;
+            TransferOrchestrator.onVanillaConnectCompleted(playerUuid);
+            return; // Do NOT cancel — vanilla connect runs
         }
 
-        ServerAddress address   = (ServerAddress) args[0];
-        ServerData    serverData = (ServerData)    args[1];
-
-        // Arm the bypass flag before scheduling — the volatile write here happens-before
-        // the render thread reads it, so the flag is guaranteed visible when the mixin fires.
-        leappad_bypassGate = true;
-
-        // Re-trigger vanilla connect using ConnectScreenInvoker.invokeConnect(), which
-        // targets method_36877 by intermediary name. This is the same static factory
-        // both old versions used. mc.screen is passed as the parent so ConnectScreen
-        // has a screen to return to if the connection fails.
-        Minecraft mc = Minecraft.getInstance();
-        final ServerAddress finalAddress = address;
-        final ServerData finalServerData = serverData;
-        mc.execute(() ->
-            ConnectScreenInvoker.invokeConnect(mc.screen, mc, finalAddress, finalServerData, false)
-        );
-
-        LeapPadCommon.LOGGER.info(
-            "[Leap! Pad] Gate released for player {} — vanilla connect re-triggered.", playerUuid
-        );
-    }
-
-    // Called by the PortalConnectTrigger bridge (injected from LeapPadFabricClient)
-    // before it triggers a vanilla connect on behalf of a portal walk-in.
-    // The next intercept will read these fields, clear them, and pass them to
-    // onConnectionAttempt() as portal context.
-    public static void setPendingPortalContext(String portalUuid, String originAddress) {
-        leappad_pendingPortalUuid   = portalUuid;
-        leappad_pendingOriginAddress = originAddress;
-    }
-
-    // -------------------------------------------------------
-    // Mixin injection — the gate itself
-    // -------------------------------------------------------
-
-    // Injects at the very start of the connect() method — before any vanilla
-    // connection logic runs. The CallbackInfo allows us to cancel vanilla execution.
-    @Inject(
-        method = "connect(Lnet/minecraft/client/Minecraft;" +
-                 "Lnet/minecraft/client/multiplayer/resolver/ServerAddress;" +
-                 "Lnet/minecraft/client/multiplayer/ServerData;)V",
-        at = @At("HEAD"),
-        cancellable = true
-    )
-    private void leappad_interceptConnect(Minecraft minecraft,
-                                           ServerAddress address,
-                                           ServerData serverData,
-                                           CallbackInfo ci) {
-
-        // D1-B: If the bypass flag is set, this is the gate-release re-trigger.
-        // Clear the flag and return without cancelling — vanilla connect runs.
-        if (leappad_bypassGate) {
-            leappad_bypassGate = false;
-            LeapPadCommon.LOGGER.info("[Leap! Pad] Bypass active — vanilla connect proceeding.");
-            return;
-        }
-
-        // All other paths: cancel vanilla and drive the sequence through the orchestrator.
-        String targetAddress = address.getHost() + ":" + address.getPort();
-        String playerUuid    = minecraft.getUser().getProfileId().toString();
-
-        // Store the connect args so releaseGate() can re-trigger vanilla connect later.
-        leappad_pendingArgs.put(playerUuid, new Object[]{address, serverData});
-
-        // D2-B: Read and clear portal context. Null for non-portal connections
-        // (direct connect, server list, LAN) — those paths never call setPendingPortalContext().
-        String portalUuid    = leappad_pendingPortalUuid;
-        String originAddress = leappad_pendingOriginAddress;
-        leappad_pendingPortalUuid    = null;
-        leappad_pendingOriginAddress = null;
-
-        // Cancel vanilla connection — TransferOrchestrator drives everything from here.
-        // The gate will not release until onReadyEchoReceived() fires and calls releaseGate().
+        // First intercept — cancel vanilla and start our sequence.
         ci.cancel();
 
-        TransferOrchestrator.onConnectionAttempt(
-            playerUuid,
-            targetAddress,
-            portalUuid,    // null for direct connect / server list / LAN
-            originAddress  // null for direct connect / server list / LAN
+        String targetAddress = address.getHost() + ":" + address.getPort();
+        LeapPadCommon.LOGGER.info(
+            "[Leap! Pad] Intercepted connect for player {} → {} — starting sequence.",
+            playerUuid, targetAddress
         );
+
+        // Start the sequence on a background thread.
+        // null origin args = not a portal path (portal path enters via portal_initiate packet).
+        final String capturedTarget = targetAddress;
+        final String capturedUuid   = playerUuid;
+        Thread t = new Thread(
+            () -> TransferOrchestrator.onConnectionAttempt(capturedUuid, capturedTarget, null, null),
+            "LeapPad-ConnectEntry"
+        );
+        t.setDaemon(true);
+        t.start();
     }
 }
