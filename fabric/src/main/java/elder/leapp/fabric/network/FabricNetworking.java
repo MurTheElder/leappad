@@ -5,18 +5,21 @@ package elder.leapp.fabric.network;
 // Registers channel listeners on init, dispatches received packets to the
 // appropriate handlers in common code, wraps outbound sends.
 //
-// Also implements the TransferOrchestrator.PacketSender and
-// AutosavePushManager.DatPusher interfaces so common code can trigger
-// network sends without importing Fabric classes directly.
+// Implements:
+//   - TransferOrchestrator.PacketSender
+//   - AutosavePushManager.DatPusher
+//   - LeapPortalBlock.PortalPacketSender (new — sends portal_initiate S→C)
 //
-// ST3 fix: PROFILE_DAT_SEND receiver now writes the received dat blob to
-// playerdata/[UUID].dat so it is in place before vanilla join completes.
-//
-// ST4 fix: UUID_CONFIRM receiver now calls PortalRegistry.updateMirrorPortalUuid()
-// to finalise the mirror portal UUID after deconfliction (step 10).
+// Changes from Phase 2:
+//   - Added leappad:portal_initiate client-side receiver. When received, calls
+//     TransferOrchestrator.onConnectionAttempt() directly — the portal path entry.
+//   - Added sendPortalInitiate() outbound helper for LeapPortalBlock.
+//   - ST3: PROFILE_DAT_SEND receiver writes blob to playerdata/[UUID].dat.
+//   - ST4: UUID_CONFIRM receiver calls PortalRegistry.updateMirrorPortalUuid().
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.network.LeapPadPackets;
+import elder.leapp.portal.LeapPortalBlock;
 import elder.leapp.portal.PortalRegistry;
 import elder.leapp.profile.AutosavePushManager;
 import elder.leapp.profile.ProfileManager;
@@ -35,32 +38,28 @@ import java.nio.file.Path;
 public class FabricNetworking {
 
     // -------------------------------------------------------
-    // Client-side receivers — registered by LeapPadFabricClient
+    // Client-side receivers
     // -------------------------------------------------------
 
     public static void registerClientReceivers() {
 
-        // leappad:probe_response — S→C, Step 3
-        // Not used on the game connection — probe travels over raw TCP.
-        // Included here for completeness; actual probe response is handled by WorldPinger.
-
         // leappad:warning_screen — S→C, Step 4
-        // Host tells us the target has no Leap! Pad — show the warning screen.
         ClientPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.WARNING_SCREEN,
             (client, handler, buf, responseSender) -> {
-                LeapPadPackets.WarningScreenPacket pkt = LeapPadPackets.WarningScreenPacket.decode(buf);
+                LeapPadPackets.WarningScreenPacket pkt =
+                    LeapPadPackets.WarningScreenPacket.decode(buf);
                 client.execute(() -> {
                     LeapPadCommon.LOGGER.info(
-                        "[Leap! Pad] Warning screen received for target: {}", pkt.targetAddress
+                        "[Leap! Pad] Warning screen: target has no Leap! Pad — {}",
+                        pkt.targetAddress
                     );
-                    // TODO ST1: open WarningScreen — implement when WarningScreen class is built
+                    // TODO ST1: open WarningScreen
                 });
             }
         );
 
         // leappad:uuid_list — S→C, Step 8
-        // Host sends its portal UUID list for deconfliction.
         ClientPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.UUID_LIST,
             (client, handler, buf, responseSender) -> {
@@ -74,57 +73,91 @@ public class FabricNetworking {
         );
 
         // leappad:leapforward_cache — S→C, Step 10
-        // Host sends a chunk of the Leap! Forward environment package.
         ClientPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.LEAPFORWARD_CACHE,
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.LeapForwardCachePacket pkt =
                     LeapPadPackets.LeapForwardCachePacket.decode(buf);
-                // Leap! Forward handles its own chunk reassembly via a hook point.
-                // Leap! Pad just receives and logs the chunk data.
-                LeapPadCommon.LOGGER.debug(
-                    "[Leap! Pad] Leap! Forward cache chunk {}/{} received.",
-                    pkt.chunkIndex + 1, pkt.totalChunks
+                client.execute(() ->
+                    LeapPadCommon.LOGGER.info(
+                        "[Leap! Pad] Leap! Forward cache chunk {}/{} received.",
+                        pkt.chunkIndex + 1, pkt.totalChunks
+                    )
                 );
-                // Hook point for Leap! Forward — deferred to Leap! Forward Phase 1
             }
         );
 
         // leappad:ready_echo — S→C, Step 12
-        // Host echoes our READY signal back — dual confirmation, gate releases.
+        // Host confirms all pre-arrival work is done. Trigger vanilla connect.
         ClientPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.READY_ECHO,
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.ReadyEchoPacket pkt = LeapPadPackets.ReadyEchoPacket.decode(buf);
                 String playerUuid = client.player == null ? "" :
                     client.player.getUUID().toString();
-                client.execute(() ->
-                    TransferOrchestrator.onReadyEchoReceived(playerUuid)
-                );
+                client.execute(() -> {
+                    LeapPadCommon.LOGGER.info(
+                        "[Leap! Pad] READY echo received for player {} (key: {})",
+                        playerUuid, pkt.transferKey
+                    );
+                    TransferOrchestrator.onReadyEchoReceived(playerUuid);
+                });
             }
         );
 
         // leappad:profile_dat_push — S→C, Steps 14+15
-        // Host pushes current player dat — save to active profile if one is set.
+        // Host pushes current player dat on autosave or disconnect.
         ClientPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.PROFILE_DAT_PUSH,
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.ProfileDatPushPacket pkt =
                     LeapPadPackets.ProfileDatPushPacket.decode(buf);
-                client.execute(() -> ProfileManager.saveReceivedDat(pkt.datBlob));
+                client.execute(() -> {
+                    if (ProfileManager.getActiveProfileUuid() != null) {
+                        ProfileManager.saveReceivedDat(pkt.datBlob);
+                    }
+                });
+            }
+        );
+
+        // leappad:portal_initiate — S→C, Portal path entry
+        // Sent by LeapPortalBlock when a player walks into a linked portal.
+        // Calls onConnectionAttempt() directly — no vanilla connect trigger needed here.
+        // The full sequence runs, and FabricReconnectHandler calls method_36877 at the end.
+        ClientPlayNetworking.registerGlobalReceiver(
+            LeapPadPackets.PORTAL_INITIATE,
+            (client, handler, buf, responseSender) -> {
+                LeapPadPackets.PortalInitiatePacket pkt =
+                    LeapPadPackets.PortalInitiatePacket.decode(buf);
+                String playerUuid = client.player == null ? "" :
+                    client.player.getUUID().toString();
+                client.execute(() -> {
+                    LeapPadCommon.LOGGER.info(
+                        "[Leap! Pad] portal_initiate received for player {} → {}",
+                        playerUuid, pkt.targetAddress
+                    );
+                    // Start the sequence directly — this is the portal path entry point.
+                    // originPortalUuid and originAddress are provided so the sequence
+                    // knows this is a portal path and can build the mirror portal.
+                    TransferOrchestrator.onConnectionAttempt(
+                        playerUuid,
+                        pkt.targetAddress,
+                        pkt.portalUuid,
+                        pkt.originAddress
+                    );
+                });
             }
         );
     }
 
     // -------------------------------------------------------
-    // Server-side receivers — registered by LeapPadFabric
+    // Server-side receivers
     // -------------------------------------------------------
 
     public static void registerServerReceivers() {
 
         // leappad:profile_dat_send — C→S, Step 6
-        // Client sends their profile dat blob before vanilla join.
-        // ST3 fix: Write the blob to playerdata/[UUID].dat immediately so it is
+        // ST3: Write the blob to playerdata/[UUID].dat immediately so it is
         // in place when vanilla join completes and the player spawns.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.PROFILE_DAT_SEND,
@@ -141,9 +174,7 @@ public class FabricNetworking {
                         LeapPadCommon.LOGGER.info(
                             "[Leap! Pad] Profile dat written for {} — profile: {}, {} bytes, LF: {}",
                             player.getName().getString(),
-                            pkt.profileUuid,
-                            pkt.datBlob.length,
-                            pkt.leapForward
+                            pkt.profileUuid, pkt.datBlob.length, pkt.leapForward
                         );
                     } catch (IOException e) {
                         LeapPadCommon.LOGGER.error(
@@ -156,7 +187,6 @@ public class FabricNetworking {
         );
 
         // leappad:transfer_cancel — C→S, Step 4
-        // Player cancelled the warning screen — discard the session.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.TRANSFER_CANCEL,
             (server, player, handler, buf, responseSender) -> {
@@ -166,16 +196,11 @@ public class FabricNetworking {
                     "[Leap! Pad] Transfer cancelled by {} (key: {})",
                     player.getName().getString(), pkt.transferKey
                 );
-                // Session discard is handled by TransferOrchestrator timeout;
-                // the session will expire naturally since no further packets arrive.
-                // Active session cleanup on explicit cancel is a Phase 4 refinement.
             }
         );
 
         // leappad:uuid_confirm — C→S, Step 10
-        // Client sends the agreed portal UUID after deconfliction.
-        // ST4 fix: Finalise the mirror portal UUID in PortalRegistry by replacing
-        // the provisional UUID assigned at placement with the agreed UUID.
+        // ST4: Finalise the mirror portal UUID in PortalRegistry.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.UUID_CONFIRM,
             (server, player, handler, buf, responseSender) -> {
@@ -194,16 +219,13 @@ public class FabricNetworking {
         );
 
         // leappad:ready — C→S, Step 11
-        // Client signals all pre-connection work is complete.
-        // Echo the READY signal back to release the gate on the client.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.READY,
             (server, player, handler, buf, responseSender) -> {
                 LeapPadPackets.ReadyPacket pkt = LeapPadPackets.ReadyPacket.decode(buf);
                 server.execute(() -> {
                     LeapPadCommon.LOGGER.info(
-                        "[Leap! Pad] READY received from {} — echoing back.",
-                        player.getName().getString()
+                        "[Leap! Pad] READY from {} — echoing back.", player.getName().getString()
                     );
                     sendReadyEcho(player, pkt.transferKey);
                 });
@@ -212,10 +234,9 @@ public class FabricNetworking {
     }
 
     // -------------------------------------------------------
-    // Outbound send helpers — called from common code via interfaces
+    // Outbound send helpers
     // -------------------------------------------------------
 
-    // Sends a profile dat push to the given player (S→C)
     public static void sendProfileDatPush(ServerPlayer player, byte[] datBlob) {
         FriendlyByteBuf buf = PacketByteBufs.create();
         LeapPadPackets.ProfileDatPushPacket.encode(
@@ -224,7 +245,6 @@ public class FabricNetworking {
         ServerPlayNetworking.send(player, LeapPadPackets.PROFILE_DAT_PUSH, buf);
     }
 
-    // Sends the host's portal UUID list to the client for deconfliction (S→C)
     public static void sendUuidList(ServerPlayer player, String[] uuids) {
         FriendlyByteBuf buf = PacketByteBufs.create();
         LeapPadPackets.UuidListPacket.encode(
@@ -233,7 +253,6 @@ public class FabricNetworking {
         ServerPlayNetworking.send(player, LeapPadPackets.UUID_LIST, buf);
     }
 
-    // Sends the READY echo back to the client (S→C)
     public static void sendReadyEcho(ServerPlayer player, String transferKey) {
         FriendlyByteBuf buf = PacketByteBufs.create();
         LeapPadPackets.ReadyEchoPacket.encode(
@@ -242,7 +261,6 @@ public class FabricNetworking {
         ServerPlayNetworking.send(player, LeapPadPackets.READY_ECHO, buf);
     }
 
-    // Sends a UUID confirm packet to the host (C→S)
     public static void sendUuidConfirmToServer(String agreedUuid) {
         FriendlyByteBuf buf = PacketByteBufs.create();
         LeapPadPackets.UuidConfirmPacket.encode(
@@ -251,7 +269,6 @@ public class FabricNetworking {
         ClientPlayNetworking.send(LeapPadPackets.UUID_CONFIRM, buf);
     }
 
-    // Sends a profile dat blob to the host (C→S)
     public static void sendProfileDatToServer(String profileUuid, byte[] datBlob,
                                                boolean leapForward) {
         FriendlyByteBuf buf = PacketByteBufs.create();
@@ -261,7 +278,6 @@ public class FabricNetworking {
         ClientPlayNetworking.send(LeapPadPackets.PROFILE_DAT_SEND, buf);
     }
 
-    // Sends the READY signal to the host (C→S)
     public static void sendReadyToServer(String transferKey) {
         FriendlyByteBuf buf = PacketByteBufs.create();
         LeapPadPackets.ReadyPacket.encode(
@@ -270,19 +286,32 @@ public class FabricNetworking {
         ClientPlayNetworking.send(LeapPadPackets.READY, buf);
     }
 
+    // Sends portal_initiate to the player's client (S→C)
+    public static void sendPortalInitiate(ServerPlayer player, String targetAddress,
+                                           String portalUuid, String originAddress) {
+        FriendlyByteBuf buf = PacketByteBufs.create();
+        LeapPadPackets.PortalInitiatePacket.encode(
+            new LeapPadPackets.PortalInitiatePacket(targetAddress, portalUuid, originAddress), buf
+        );
+        ServerPlayNetworking.send(player, LeapPadPackets.PORTAL_INITIATE, buf);
+    }
+
     // -------------------------------------------------------
-    // Interface implementations — injected into common code at startup
+    // Interface implementations injected into common code at startup
     // -------------------------------------------------------
 
-    // Implements AutosavePushManager.DatPusher.
-    // Reads the player's current dat file from the world save and pushes it to the client.
+    // Implements AutosavePushManager.DatPusher
     public static final AutosavePushManager.DatPusher DAT_PUSHER = player -> {
         byte[] datBlob = readPlayerDat(player);
         if (datBlob == null) return;
         sendProfileDatPush(player, datBlob);
     };
 
-    // Reads the raw bytes of a player's .dat file from the world save directory.
+    // Implements LeapPortalBlock.PortalPacketSender
+    public static final LeapPortalBlock.PortalPacketSender PORTAL_PACKET_SENDER =
+        (player, targetAddress, portalUuid, originAddress) ->
+            sendPortalInitiate(player, targetAddress, portalUuid, originAddress);
+
     private static byte[] readPlayerDat(ServerPlayer player) {
         try {
             Path datFile = player.getServer()
@@ -292,7 +321,7 @@ public class FabricNetworking {
             return Files.readAllBytes(datFile);
         } catch (Exception e) {
             LeapPadCommon.LOGGER.warn(
-                "[Leap! Pad] Could not read dat file for {}: {}",
+                "[Leap! Pad] Could not read dat for {}: {}",
                 player.getName().getString(), e.getMessage()
             );
             return null;
