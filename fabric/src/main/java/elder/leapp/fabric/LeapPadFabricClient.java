@@ -15,6 +15,7 @@ package elder.leapp.fabric;
 //       PortalConnectTrigger — stores portal context and triggers vanilla connect (D2-B)
 
 import elder.leapp.LeapPadCommon;
+import elder.leapp.fabric.mixin.ConnectScreenInvoker;
 import elder.leapp.fabric.mixin.ConnectScreenMixin;
 import elder.leapp.fabric.network.FabricNetworking;
 import elder.leapp.fabric.registry.FabricRegistrar;
@@ -80,7 +81,7 @@ public class LeapPadFabricClient implements ClientModInitializer {
         });
 
         // GateReleaser — calls ConnectScreenMixin.releaseGate(), which arms the
-        // bypass flag and calls ConnectScreen.connect() on the render
+        // bypass flag and calls ConnectScreenInvoker.connect() on the render
         // thread using the stored args from the original intercept (D1-B).
         TransferOrchestrator.setGateReleaser(playerUuid ->
             ConnectScreenMixin.releaseGate(playerUuid)
@@ -144,13 +145,13 @@ public class LeapPadFabricClient implements ClientModInitializer {
             // ServerData.Type does not exist until a later Minecraft version.
             ServerData serverData = new ServerData("leap", targetAddress, false);
 
-            // Trigger vanilla connect using the public static 3-param method:
-            // ConnectScreen.connect(Minecraft, ServerAddress, ServerData)
-            // ConnectScreenMixin intercepts the private instance connect() this calls
-            // internally, reads the portal context stored above, and drives the sequence.
+            // Trigger vanilla connect via ConnectScreenInvoker, which exposes the
+            // private static connect(Minecraft, ServerAddress, ServerData) through
+            // Mixin's @Invoker access bypass. ConnectScreenMixin intercepts that call,
+            // reads the portal context stored above, and drives the transfer sequence.
             Minecraft mc = Minecraft.getInstance();
             mc.execute(() ->
-                ConnectScreen.connect(mc, addr, serverData)
+                ConnectScreenInvoker.connect(mc, addr, serverData)
             );
         });
 
