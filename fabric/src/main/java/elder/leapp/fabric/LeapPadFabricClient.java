@@ -27,10 +27,8 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
-import net.minecraft.network.chat.Component;
 
 import java.nio.file.Path;
 
@@ -82,7 +80,7 @@ public class LeapPadFabricClient implements ClientModInitializer {
         });
 
         // GateReleaser — calls ConnectScreenMixin.releaseGate(), which arms the
-        // bypass flag and calls invokeConnect() via ConnectScreenInvoker on the render
+        // bypass flag and calls ConnectScreenInvoker.invokeConnect() on the render
         // thread using the stored args from the original intercept (D1-B).
         TransferOrchestrator.setGateReleaser(playerUuid ->
             ConnectScreenMixin.releaseGate(playerUuid)
@@ -146,24 +144,15 @@ public class LeapPadFabricClient implements ClientModInitializer {
             // ServerData.Type does not exist until a later Minecraft version.
             ServerData serverData = new ServerData("leap", targetAddress, false);
 
-            // Trigger vanilla connect by constructing a new ConnectScreen and calling
-            // invokeConnect() on it via ConnectScreenInvoker. Unlike releaseGate(),
-            // there is no existing ConnectScreen here — the player is walking out of
-            // a portal, not clicking a connect button. We construct the screen with
-            // the confirmed 2-param constructor (Screen, Component), cast to the
-            // invoker interface, call invokeConnect(), then open the screen so the
-            // player sees the "Connecting..." UI. ConnectScreenMixin intercepts the
-            // invokeConnect() call, reads the portal context stored above, and drives
-            // the full transfer sequence.
+            // Trigger vanilla connect using ConnectScreenInvoker.invokeConnect(), which
+            // targets method_36877 by intermediary name. This is the same static factory
+            // both old versions used. mc.screen is passed as the parent — it is null here
+            // since the player is in-world, so ConnectScreen will have no screen to return
+            // to on failure, but the connection itself is unaffected.
             Minecraft mc = Minecraft.getInstance();
-            mc.execute(() -> {
-                ConnectScreen screen = new ConnectScreen(
-                    mc.screen,
-                    Component.translatable("connect.connecting")
-                );
-                ((ConnectScreenInvoker) screen).invokeConnect(mc, addr, serverData);
-                mc.setScreen(screen);
-            });
+            mc.execute(() ->
+                ConnectScreenInvoker.invokeConnect(mc.screen, mc, addr, serverData, false)
+            );
         });
 
         LeapPadCommon.LOGGER.info("Leap! Pad (Fabric client) ready.");
