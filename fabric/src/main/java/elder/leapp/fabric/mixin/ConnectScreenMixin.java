@@ -17,9 +17,10 @@ package elder.leapp.fabric.mixin;
 // Gate release (D1-B):
 //   On first intercept, args are stored in leappad_pendingArgs.
 //   When the orchestrator finishes all pre-connection work, it calls releaseGate().
-//   releaseGate() calls ConnectScreenInvoker.connect(Minecraft, ServerAddress, ServerData)
-//   which exposes the private static connect() via Mixin's @Invoker bypass.
-//   The mixin intercepts that call, sees the bypass flag, clears it, and lets vanilla run.
+//   releaseGate() casts mc.screen (which IS the open ConnectScreen) to
+//   ConnectScreenInvoker and calls invokeConnect() — exposing the private instance
+//   connect() via Mixin's @Invoker bypass. The mixin intercepts that call, sees the
+//   bypass flag, clears it, and lets vanilla run.
 //
 // Portal context (D2-B):
 //   LeapPortalBlock does not call the orchestrator directly. Instead it calls
@@ -98,15 +99,26 @@ public class ConnectScreenMixin {
         // immediately on the next frame.
         leappad_bypassGate = true;
 
-        // Re-trigger vanilla connect via ConnectScreenInvoker, which exposes the
-        // private static connect(Minecraft, ServerAddress, ServerData) through
-        // Mixin's @Invoker access bypass. Called on the render thread.
+        // Re-trigger vanilla connect by casting the currently-open ConnectScreen
+        // to ConnectScreenInvoker and calling invokeConnect(). This exposes the
+        // private instance connect() via Mixin's @Invoker bypass.
+        // mc.screen is guaranteed to be a ConnectScreen here — the gate only arms
+        // when connect() fires, which only happens inside an open ConnectScreen.
+        // The instanceof check guards against the edge case where the player
+        // closes the screen manually before the gate releases.
         Minecraft mc = Minecraft.getInstance();
         final ServerAddress finalAddress = address;
         final ServerData finalServerData = serverData;
-        mc.execute(() ->
-            ConnectScreenInvoker.connect(mc, finalAddress, finalServerData)
-        );
+        mc.execute(() -> {
+            if (mc.screen instanceof ConnectScreenInvoker invoker) {
+                invoker.invokeConnect(mc, finalAddress, finalServerData);
+            } else {
+                LeapPadCommon.LOGGER.warn(
+                    "[Leap! Pad] releaseGate: mc.screen is not a ConnectScreen — " +
+                    "player may have closed the connecting screen. Gate release aborted."
+                );
+            }
+        });
 
         LeapPadCommon.LOGGER.info(
             "[Leap! Pad] Gate released for player {} — vanilla connect re-triggered.", playerUuid
