@@ -17,10 +17,10 @@ package elder.leapp.fabric.mixin;
 // Gate release (D1-B):
 //   On first intercept, args are stored in leappad_pendingArgs.
 //   When the orchestrator finishes all pre-connection work, it calls releaseGate().
-//   releaseGate() sets leappad_bypassGate = true, constructs a new ConnectScreen with
-//   the stored args, and opens it via mc.setScreen() on the render thread.
-//   ConnectScreen.init() calls the private connect() method internally — the mixin
-//   intercepts that call, sees the bypass flag, clears it, and lets vanilla run.
+//   releaseGate() calls ConnectScreen.connect(Screen, Minecraft, ServerAddress, ServerData, false)
+//   — the public static 5-param factory (method_36877 in intermediary). This opens
+//   the connect screen and triggers the private instance connect() internally.
+//   The mixin intercepts that call, sees the bypass flag, clears it, and lets vanilla run.
 //
 // Portal context (D2-B):
 //   LeapPortalBlock does not call the orchestrator directly. Instead it calls
@@ -98,18 +98,19 @@ public class ConnectScreenMixin {
         // immediately on the next frame.
         leappad_bypassGate = true;
 
-        // Schedule the vanilla connect re-trigger on the render thread.
-        // Construct a ConnectScreen with the stored args and open it via setScreen().
-        // ConnectScreen.init() calls the private connect() method internally —
-        // our mixin intercepts that call. The bypass flag ensures we let it through.
-        // Constructor: ConnectScreen(Screen parent, Minecraft mc, ServerAddress, ServerData)
+        // Re-trigger vanilla connect using the public static 5-param method confirmed
+        // by the old versions of this project (method_36877 in intermediary):
+        // ConnectScreen.connect(Screen, Minecraft, ServerAddress, ServerData, boolean)
+        // This is the same method vanilla's server list and direct-connect screens call.
+        // The boolean is a "quickPlay" flag — false for normal connections.
+        // Our mixin intercepts the private instance connect() that this calls internally;
+        // the bypass flag ensures we let it through on this re-trigger.
         Minecraft mc = Minecraft.getInstance();
         final ServerAddress finalAddress = address;
         final ServerData finalServerData = serverData;
-        mc.execute(() -> {
-            ConnectScreen screen = new ConnectScreen(mc.screen, mc, finalAddress, finalServerData);
-            mc.setScreen(screen);
-        });
+        mc.execute(() ->
+            ConnectScreen.connect(mc.screen, mc, finalAddress, finalServerData, false)
+        );
 
         LeapPadCommon.LOGGER.info(
             "[Leap! Pad] Gate released for player {} — vanilla connect re-triggered.", playerUuid
