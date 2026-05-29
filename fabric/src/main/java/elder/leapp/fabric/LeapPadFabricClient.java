@@ -144,16 +144,13 @@ public class LeapPadFabricClient implements ClientModInitializer {
             // ServerData.Type does not exist until a later Minecraft version.
             ServerData serverData = new ServerData("leap", targetAddress, false);
 
-            // Trigger vanilla connect using the confirmed public static 5-param method
-            // (method_36877 in intermediary, used by both old versions of this project):
-            // ConnectScreen.connect(Screen, Minecraft, ServerAddress, ServerData, boolean)
-            // The boolean is a quickPlay flag — pass false for normal connections.
-            // ConnectScreenMixin intercepts the private instance connect() that this
-            // calls internally, reads the portal context stored above, and drives
-            // the full transfer sequence.
+            // Trigger vanilla connect using the public static 3-param method:
+            // ConnectScreen.connect(Minecraft, ServerAddress, ServerData)
+            // ConnectScreenMixin intercepts the private instance connect() this calls
+            // internally, reads the portal context stored above, and drives the sequence.
             Minecraft mc = Minecraft.getInstance();
             mc.execute(() ->
-                ConnectScreen.connect(mc.screen, mc, addr, serverData, false)
+                ConnectScreen.connect(mc, addr, serverData)
             );
         });
 
