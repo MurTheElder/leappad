@@ -11,7 +11,7 @@ package elder.leapp.fabric;
 //   - Register server-side packet receivers (C1)
 //   - Inject the AutosavePushManager.DatPusher bridge (C4)
 //   - On world start: load config, init port cache, start ProbeListener,
-//     load portal registry, init autosave buckets (C6, C7)
+//     load portal registry, inject HostPrepNotifier, init autosave buckets (C6, C7)
 //   - Hook server tick to fire AutosavePushManager.onAutosave() every 6000 ticks
 //   - Register the ServerPlayConnectionEvents.JOIN listener for bucket assignment
 //   - Register the ServerPlayConnectionEvents.DISCONNECT listener for dat push on leave
@@ -24,11 +24,13 @@ import elder.leapp.portal.PortalRegistry;
 import elder.leapp.probe.PortBindingCache;
 import elder.leapp.profile.AutosavePushManager;
 import elder.leapp.transfer.ProbeListener;
+import elder.leapp.transfer.TransferOrchestrator;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.LevelResource;
 
 import java.nio.file.Path;
@@ -79,6 +81,24 @@ public class LeapPadFabric implements ModInitializer {
             Path worldSaveDir = server.getWorldPath(LevelResource.ROOT)
                 .toAbsolutePath();
             PortalRegistry.load(worldSaveDir);
+
+            // B1+B2 fix: inject HostPrepNotifier now that the server reference
+            // is available. This allows TransferOrchestrator.onHostPrepComplete()
+            // to look up the player and send them the UUID list (step 8).
+            // The lambda captures the server reference so it can resolve
+            // player UUIDs to ServerPlayer instances at call time.
+            TransferOrchestrator.setHostPrepNotifier((playerUuid, uuids) -> {
+                ServerPlayer player = server.getPlayerList().getPlayer(
+                    java.util.UUID.fromString(playerUuid)
+                );
+                if (player != null) {
+                    FabricNetworking.sendUuidList(player, uuids);
+                } else {
+                    LeapPadCommon.LOGGER.warn(
+                        "[Leap! Pad] HostPrepNotifier: player {} not found on server.", playerUuid
+                    );
+                }
+            });
 
             // Init autosave bucket system now that config is loaded
             // (playerDatCyclic determines how many buckets to create).
