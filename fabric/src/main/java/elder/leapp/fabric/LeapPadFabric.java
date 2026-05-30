@@ -12,6 +12,7 @@ package elder.leapp.fabric;
 //   - Inject the AutosavePushManager.DatPusher bridge (C4)
 //   - On world start: load config, init port cache, start ProbeListener,
 //     load portal registry, inject HostPrepNotifier, init autosave buckets (C6, C7)
+//   - On world stop: push final dat, stop ProbeListener, save portal registry (N3)
 //   - Hook server tick to fire AutosavePushManager.onAutosave() every 6000 ticks
 //   - Register the ServerPlayConnectionEvents.JOIN listener for bucket assignment
 //   - Register the ServerPlayConnectionEvents.DISCONNECT listener for dat push on leave
@@ -36,6 +37,11 @@ import net.minecraft.world.level.storage.LevelResource;
 import java.nio.file.Path;
 
 public class LeapPadFabric implements ModInitializer {
+
+    // Captured in SERVER_STARTING, read in SERVER_STOPPING.
+    // Needed because SERVER_STOPPING lambda doesn't have server.getWorldPath() available
+    // in a convenient single-expression form, and we want a clean reference.
+    private static Path worldSaveDir;
 
     @Override
     public void onInitialize() {
@@ -78,9 +84,14 @@ public class LeapPadFabric implements ModInitializer {
             // C6: Load portal registry from the world save directory.
             // server.getWorldPath(ROOT) returns the level folder itself (e.g.
             // saves/New World/). The registry dat lives inside that folder.
-            Path worldSaveDir = server.getWorldPath(LevelResource.ROOT)
-                .toAbsolutePath();
+            worldSaveDir = server.getWorldPath(LevelResource.ROOT).toAbsolutePath();
             PortalRegistry.load(worldSaveDir);
+
+            // N4: Inject ServerLevelProvider so TransferOrchestrator.onHostPrepComplete()
+            // can pass a ServerLevel to MirrorPortalManager when building the mirror portal.
+            TransferOrchestrator.setServerLevelProvider(consumer ->
+                consumer.accept(server.overworld())
+            );
 
             // B1+B2 fix: inject HostPrepNotifier now that the server reference
             // is available. This allows TransferOrchestrator.onHostPrepComplete()
@@ -105,6 +116,20 @@ public class LeapPadFabric implements ModInitializer {
             AutosavePushManager.init();
 
             LeapPadCommon.LOGGER.info("[Leap! Pad] World starting — config loaded, registry loaded, probe listener started.");
+        });
+
+        // N3 fix: clean shutdown when the world stops.
+        // Push all remaining player dat, stop probe listener, save portal registry.
+        // Without this, ProbeListener threads linger until JVM exit, the final
+        // autosave push never fires, and any portal registry changes made in the
+        // session since the last disk write are lost.
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
+            AutosavePushManager.onShutdown();
+            ProbeListener.stop();
+            if (worldSaveDir != null) {
+                PortalRegistry.save();
+            }
+            LeapPadCommon.LOGGER.info("[Leap! Pad] World stopping — shutdown complete.");
         });
 
         // Hook the autosave cycle so AutosavePushManager can push player dat on schedule.

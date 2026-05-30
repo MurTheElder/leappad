@@ -170,29 +170,37 @@ public class FabricNetworking {
                 LeapPadPackets.ProfileDatSendPacket pkt =
                     LeapPadPackets.ProfileDatSendPacket.decode(buf);
                 server.execute(() -> {
-                    try {
-                        Path datFile = player.getServer()
-                            .getWorldPath(LevelResource.PLAYER_DATA_DIR)
-                            .resolve(player.getStringUUID() + ".dat");
-                        Files.createDirectories(datFile.getParent());
-                        Files.write(datFile, pkt.datBlob);
+                    // Only write the dat file if a real blob was sent.
+                    // An empty blob means the player has no active profile (N1 fix) —
+                    // the packet was sent purely to trigger onHostPrepComplete().
+                    if (pkt.datBlob.length > 0) {
+                        try {
+                            Path datFile = player.getServer()
+                                .getWorldPath(LevelResource.PLAYER_DATA_DIR)
+                                .resolve(player.getStringUUID() + ".dat");
+                            Files.createDirectories(datFile.getParent());
+                            Files.write(datFile, pkt.datBlob);
+                            LeapPadCommon.LOGGER.info(
+                                "[Leap! Pad] Profile dat written for {} — profile: {}, {} bytes, LF: {}",
+                                player.getName().getString(),
+                                pkt.profileUuid, pkt.datBlob.length, pkt.leapForward
+                            );
+                        } catch (IOException e) {
+                            LeapPadCommon.LOGGER.error(
+                                "[Leap! Pad] Failed to write profile dat for {}: {}",
+                                player.getName().getString(), e.getMessage()
+                            );
+                        }
+                    } else {
                         LeapPadCommon.LOGGER.info(
-                            "[Leap! Pad] Profile dat written for {} — profile: {}, {} bytes, LF: {}",
-                            player.getName().getString(),
-                            pkt.profileUuid, pkt.datBlob.length, pkt.leapForward
-                        );
-                    } catch (IOException e) {
-                        LeapPadCommon.LOGGER.error(
-                            "[Leap! Pad] Failed to write profile dat for {}: {}",
-                            player.getName().getString(), e.getMessage()
+                            "[Leap! Pad] Empty profile dat received for {} — no file written (no active profile).",
+                            player.getName().getString()
                         );
                     }
 
-                    // B1+B2 fix: trigger host prep completion (step 7 → step 8).
-                    // On the portal path this causes the orchestrator to send the
-                    // UUID list to the client, starting UUID deconfliction.
-                    // On the non-portal path onHostPrepComplete() is a no-op
-                    // (session.isPortalPath == false).
+                    // Trigger host prep completion (step 7 → step 8).
+                    // Fires for all PROFILE_DAT_SEND receipts — onHostPrepComplete()
+                    // checks session.isPortalPath and is a no-op on the non-portal path.
                     TransferOrchestrator.onHostPrepComplete(player.getStringUUID());
                 });
             }
@@ -212,19 +220,26 @@ public class FabricNetworking {
         );
 
         // leappad:uuid_confirm — C→S, Step 10
-        // ST4: Finalise the mirror portal UUID in PortalRegistry.
+        // Finalises the mirror portal: renames provisional UUID to agreed UUID,
+        // links the portal to the origin address, and updates the player's spawn point.
         ServerPlayNetworking.registerGlobalReceiver(
             LeapPadPackets.UUID_CONFIRM,
             (server, player, handler, buf, responseSender) -> {
                 LeapPadPackets.UuidConfirmPacket pkt =
                     LeapPadPackets.UuidConfirmPacket.decode(buf);
                 server.execute(() -> {
+                    // Rename provisional UUID → agreed UUID in the registry.
                     PortalRegistry.updateMirrorPortalUuid(
                         player.getStringUUID(), pkt.agreedUuid
                     );
+                    // N4: Link the (now correctly named) mirror portal back to
+                    // the origin world address so players can use it to return.
+                    if (!pkt.originAddress.isEmpty()) {
+                        PortalRegistry.linkPortal(pkt.agreedUuid, pkt.originAddress);
+                    }
                     LeapPadCommon.LOGGER.info(
-                        "[Leap! Pad] Mirror portal UUID finalised for {}: {}",
-                        player.getName().getString(), pkt.agreedUuid
+                        "[Leap! Pad] Mirror portal finalised for {}: UUID={}, linked to {}",
+                        player.getName().getString(), pkt.agreedUuid, pkt.originAddress
                     );
                 });
             }
@@ -273,10 +288,10 @@ public class FabricNetworking {
         ServerPlayNetworking.send(player, LeapPadPackets.READY_ECHO, buf);
     }
 
-    public static void sendUuidConfirmToServer(String agreedUuid) {
+    public static void sendUuidConfirmToServer(String agreedUuid, String originAddress) {
         FriendlyByteBuf buf = PacketByteBufs.create();
         LeapPadPackets.UuidConfirmPacket.encode(
-            new LeapPadPackets.UuidConfirmPacket(agreedUuid), buf
+            new LeapPadPackets.UuidConfirmPacket(agreedUuid, originAddress), buf
         );
         ClientPlayNetworking.send(LeapPadPackets.UUID_CONFIRM, buf);
     }

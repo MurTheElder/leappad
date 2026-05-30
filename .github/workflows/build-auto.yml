@@ -78,6 +78,13 @@ jobs:
           path: ${{ env.JAR_PATH }}
           if-no-files-found: error
 
+      - name: Create and push git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ env.TAG }}
+          git push origin ${{ env.TAG }}
+
       - name: Create GitHub Release and tag
         uses: softprops/action-gh-release@v2
         with:

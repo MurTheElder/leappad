@@ -209,17 +209,20 @@ public class LeapPadPackets {
     // leappad:uuid_confirm — C→S, Step 10
     public static class UuidConfirmPacket {
         public final String agreedUuid;
+        public final String originAddress;  // N4: needed by host to link mirror portal back
 
-        public UuidConfirmPacket(String agreedUuid) {
+        public UuidConfirmPacket(String agreedUuid, String originAddress) {
             this.agreedUuid = agreedUuid;
+            this.originAddress = originAddress;
         }
 
         public static void encode(UuidConfirmPacket pkt, FriendlyByteBuf buf) {
             buf.writeUtf(pkt.agreedUuid);
+            buf.writeUtf(pkt.originAddress);
         }
 
         public static UuidConfirmPacket decode(FriendlyByteBuf buf) {
-            return new UuidConfirmPacket(buf.readUtf());
+            return new UuidConfirmPacket(buf.readUtf(), buf.readUtf());
         }
     }
 
