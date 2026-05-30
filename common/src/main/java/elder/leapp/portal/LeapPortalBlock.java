@@ -17,7 +17,6 @@ package elder.leapp.portal;
 // client-side sequence.
 
 import elder.leapp.LeapPadCommon;
-import elder.leapp.network.LeapPadPackets;
 import elder.leapp.transfer.TransferOrchestrator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
