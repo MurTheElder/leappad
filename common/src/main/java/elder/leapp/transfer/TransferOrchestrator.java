@@ -9,21 +9,31 @@ package elder.leapp.transfer;
 //   - Portal path: LeapPortalBlock sends leappad:portal_initiate S→C packet.
 //     Client receives it and calls onConnectionAttempt() directly.
 //   - Direct connect / server list path: ConnectScreenMixin injects into
-//     method_36877 (remap=false), cancels the initial call, and calls
-//     onConnectionAttempt() with the address and server data.
+//     startConnecting(), cancels the initial call, and calls onConnectionAttempt().
 //   - Both paths run the same probe → profile → dat → host prep → deconfliction
 //     → READY sequence on background threads.
 //   - When READY echo is received (step 12), VanillaConnectTrigger.connect()
-//     is called. FabricReconnectHandler implements this: it disconnects the
-//     player from their current world and calls method_36877 via @Invoker
-//     to open a fresh ConnectScreen and connect to the target.
+//     is called. FabricReconnectHandler disconnects from the current world
+//     and calls ConnectScreen.startConnecting() to open a fresh ConnectScreen.
 //   - ConnectScreenMixin sees the session is COMPLETE and does not cancel.
 //     Vanilla join runs normally.
 //
-// Removed: GateReleaser, PortalConnectTrigger, triggerPortalConnect().
-// Added: VanillaConnectTrigger, isSessionComplete(), onVanillaConnectCompleted().
+// B1+B2 fix: sendProfileDat() no longer calls notifyHostReady() directly.
+//   - Portal path: session advances to AWAITING_HOST_PREP and waits. The host
+//     receives the dat, does prep work (mirror portal etc.), sends the UUID list
+//     (step 8). Client deconflicts, sends UUID confirm (step 10). Client then
+//     advances to AWAITING_READY_ECHO and sends READY (step 11).
+//   - Non-portal path: no UUID deconfliction. After dat send the client advances
+//     to AWAITING_READY_ECHO and sends READY immediately (no host prep to wait on).
+//   onUuidConfirmSent() is the new client-side hook that fires after step 10 on
+//   the portal path and triggers READY. onReadyEchoReceived() handles step 12.
+//
+// B4 fix: discardSession() now takes the session object so it can call
+//   LeapPortalBlock.clearTrigger() for portal-path sessions.
+//   onVanillaConnectCompleted() does the same.
 
 import elder.leapp.LeapPadCommon;
+import elder.leapp.portal.LeapPortalBlock;
 import elder.leapp.portal.PortalRegistry;
 import elder.leapp.profile.ProfileManager;
 
@@ -101,19 +111,21 @@ public class TransferOrchestrator {
     }
 
     // -------------------------------------------------------
-    // Session state check — used by ConnectScreenMixin
-    // Returns true when the sequence is fully complete and the vanilla
-    // connect triggered by FabricReconnectHandler should be allowed through.
+    // Session state checks — used by ConnectScreenMixin
     // -------------------------------------------------------
+
+    // Returns true when the sequence is fully complete and the vanilla connect
+    // triggered by FabricReconnectHandler should be allowed through.
     public static boolean isSessionComplete(String playerUuid) {
         TransferSession session = activeSessions.get(playerUuid);
         return session != null && session.state == TransferSession.TransferState.COMPLETE;
     }
 
     // Called by ConnectScreenMixin after it lets the vanilla connect through.
-    // Clears the COMPLETE session so the player can make future transfers.
+    // Clears the COMPLETE session and releases the portal re-entry guard (B4).
     public static void onVanillaConnectCompleted(String playerUuid) {
-        discardSession(playerUuid);
+        TransferSession session = activeSessions.get(playerUuid);
+        discardSession(playerUuid, session);
     }
 
     // -------------------------------------------------------
@@ -190,6 +202,20 @@ public class TransferOrchestrator {
 
     // -------------------------------------------------------
     // Step 6 — send profile dat
+    //
+    // B1+B2 fix: this method no longer calls notifyHostReady() directly.
+    //
+    // Portal path:
+    //   Dat is sent. Session advances to AWAITING_HOST_PREP and waits.
+    //   The host receives the dat, does step 7 prep work (mirror portal,
+    //   dat file write, Leap! Forward cache), then sends the UUID list (step 8).
+    //   The host-side trigger for this is in FabricNetworking.registerServerReceivers()
+    //   which calls onHostPrepComplete() after writing the dat file.
+    //
+    // Non-portal path:
+    //   No UUID deconfliction. After dat is sent (or skipped), the client
+    //   advances directly to AWAITING_READY_ECHO and sends READY (step 11).
+    //   The host will echo it back and vanilla connect fires.
     // -------------------------------------------------------
 
     private static void sendProfileDat(String playerUuid, TransferSession session) {
@@ -197,21 +223,77 @@ public class TransferOrchestrator {
         byte[] datBlob     = ProfileManager.getActiveDatBlob();
 
         if (profileUuid == null || datBlob == null) {
-            session.advanceTo(TransferSession.TransferState.AWAITING_HOST_PREP);
-            notifyHostReady(playerUuid, session);
+            // No profile dat to send — proceed based on path
+            onDatSendComplete(playerUuid, session);
             return;
         }
 
         if (packetSender != null) {
             packetSender.sendProfileDat(playerUuid, profileUuid, datBlob, session.leapForwardPresent);
         }
-        session.advanceTo(TransferSession.TransferState.AWAITING_HOST_PREP);
+
+        // Portal path: wait for host prep (steps 7-10) before proceeding.
+        // Non-portal path: skip host prep, send READY immediately.
+        onDatSendComplete(playerUuid, session);
+    }
+
+    // Called after dat send (or skip) to route portal vs non-portal path.
+    private static void onDatSendComplete(String playerUuid, TransferSession session) {
+        if (session.isPortalPath) {
+            // Portal path: advance to AWAITING_HOST_PREP and wait.
+            // The host will send the UUID list (step 8) after completing step 7.
+            session.advanceTo(TransferSession.TransferState.AWAITING_HOST_PREP);
+            LeapPadCommon.LOGGER.info(
+                "[Leap! Pad] Dat sent for {} — waiting for host prep (step 7).", playerUuid
+            );
+        } else {
+            // Non-portal path: no UUID deconfliction, send READY now.
+            session.advanceTo(TransferSession.TransferState.AWAITING_READY_ECHO);
+            notifyHostReady(playerUuid, session);
+            LeapPadCommon.LOGGER.info(
+                "[Leap! Pad] Non-portal path for {} — READY sent.", playerUuid
+            );
+        }
+    }
+
+    // -------------------------------------------------------
+    // Step 7 — host prep complete (portal path only)
+    //
+    // Called by FabricNetworking on the host side after writing the dat file
+    // and completing mirror portal placement. The host then sends the UUID list.
+    // This is triggered server-side — the client receives the UUID list packet
+    // and onUuidListReceived() fires client-side.
+    // -------------------------------------------------------
+
+    // Called server-side by FabricNetworking after dat is written and prep is done.
+    // Tells the platform layer to send the UUID list to the client (step 8).
+    public static void onHostPrepComplete(String playerUuid) {
+        TransferSession session = activeSessions.get(playerUuid);
+        if (session == null) return;
+        if (!session.isPortalPath) return;
+
+        session.advanceTo(TransferSession.TransferState.AWAITING_UUID_LIST);
+
+        // Collect all portal UUIDs from the registry and send them to the client.
+        String[] uuids = PortalRegistry.getAll().keySet().toArray(new String[0]);
+        if (hostPrepNotifier != null) {
+            hostPrepNotifier.sendUuidListToClient(playerUuid, uuids);
+        } else {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] HostPrepNotifier not injected — UUID list not sent for {}.", playerUuid
+            );
+        }
+        LeapPadCommon.LOGGER.info(
+            "[Leap! Pad] Host prep complete for {} — UUID list sent ({} entries).",
+            playerUuid, uuids.length
+        );
     }
 
     // -------------------------------------------------------
     // Steps 8-10 — UUID deconfliction (portal path only)
     // -------------------------------------------------------
 
+    // Called client-side when the host sends its UUID list (step 8).
     public static void onUuidListReceived(String playerUuid, String[] hostUuids) {
         TransferSession session = activeSessions.get(playerUuid);
         if (session == null || !session.isPortalPath) return;
@@ -238,6 +320,14 @@ public class TransferOrchestrator {
         session.agreedPortalUuid = agreedUuid;
         session.advanceTo(TransferSession.TransferState.SENDING_UUID);
         if (packetSender != null) packetSender.sendUuidConfirm(playerUuid, agreedUuid);
+
+        // UUID confirm sent (step 10). All client-side pre-connection work is done.
+        // Advance to AWAITING_READY_ECHO and send the READY signal (step 11).
+        session.advanceTo(TransferSession.TransferState.AWAITING_READY_ECHO);
+        notifyHostReady(playerUuid, session);
+        LeapPadCommon.LOGGER.info(
+            "[Leap! Pad] Deconfliction complete for {} — READY sent.", playerUuid
+        );
     }
 
     // -------------------------------------------------------
@@ -278,7 +368,7 @@ public class TransferOrchestrator {
             String playerUuid       = entry.getKey();
             TransferSession session = entry.getValue();
 
-            // Never time out COMPLETE sessions — they're awaiting mixin confirmation
+            // Never time out COMPLETE sessions — waiting for mixin confirmation
             if (session.state == TransferSession.TransferState.COMPLETE) continue;
 
             long elapsed = session.millisInCurrentState();
@@ -316,12 +406,28 @@ public class TransferOrchestrator {
         );
         session.advanceTo(TransferSession.TransferState.FAILED);
         notifyPlayerTimeout(playerUuid);
-        discardSession(playerUuid);
+        discardSession(playerUuid, session);
     }
 
-    private static void discardSession(String playerUuid) {
+    // B4 fix: takes session so it can clear the portal re-entry guard.
+    // The guard must be cleared on both success and failure paths so the
+    // player can use portals again after a completed or failed transfer.
+    private static void discardSession(String playerUuid, TransferSession session) {
         activeSessions.remove(playerUuid);
         pendingPlayerUuids.remove(playerUuid);
+
+        // Clear the portal re-entry guard if this was a portal-path session.
+        // Without this, the player's UUID stays in LeapPortalBlock.activeTriggers
+        // permanently and they can never use a portal again in that session.
+        if (session != null && session.isPortalPath) {
+            try {
+                LeapPortalBlock.clearTrigger(UUID.fromString(playerUuid));
+            } catch (IllegalArgumentException e) {
+                LeapPadCommon.LOGGER.warn(
+                    "[Leap! Pad] Could not clear portal trigger for {}: bad UUID format.", playerUuid
+                );
+            }
+        }
     }
 
     private static String generatePortalUuid() {
@@ -349,11 +455,16 @@ public class TransferOrchestrator {
         void sendReady(String playerUuid, String transferKey);
     }
 
-    // Replaces GateReleaser and PortalConnectTrigger.
-    // Implemented by FabricReconnectHandler in the fabric subproject.
     // Called when the full sequence is done and vanilla connect should fire.
+    // Implemented by FabricReconnectHandler in the fabric subproject.
     public interface VanillaConnectTrigger {
         void connect(String playerUuid, String targetAddress);
+    }
+
+    // Called server-side after host prep is complete (step 7) to send the
+    // UUID list to the client (step 8). Implemented in FabricNetworking.
+    public interface HostPrepNotifier {
+        void sendUuidListToClient(String playerUuid, String[] uuids);
     }
 
     public interface PlayerNotifier {
@@ -366,10 +477,12 @@ public class TransferOrchestrator {
 
     private static PacketSender          packetSender;
     private static VanillaConnectTrigger vanillaConnectTrigger;
+    private static HostPrepNotifier      hostPrepNotifier;
     private static PlayerNotifier        playerNotifier;
 
     public static void setPacketSender(PacketSender s)                    { packetSender = s; }
     public static void setVanillaConnectTrigger(VanillaConnectTrigger t)  { vanillaConnectTrigger = t; }
+    public static void setHostPrepNotifier(HostPrepNotifier n)            { hostPrepNotifier = n; }
     public static void setPlayerNotifier(PlayerNotifier n)                { playerNotifier = n; }
 
     private static void notifyPlayerPortalInactive(String playerUuid) {
