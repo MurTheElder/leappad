@@ -1,24 +1,24 @@
 package elder.leapp.fabric.mixin;
 
 // ConnectScreenInvoker.java
-// @Invoker mixin that exposes method_36877 on ConnectScreen.
+// @Invoker mixin that exposes ConnectScreen.startConnecting() so it can be
+// called from FabricReconnectHandler.
 //
-// method_36877 is the static factory that constructs a ConnectScreen,
-// opens it, and initiates the multiplayer connection. It is the entry
-// point vanilla's own server list and direct-connect screens use.
+// startConnecting is the Mojang-mapped name for method_36877 — the public static
+// factory that constructs a ConnectScreen, opens it, and initiates the connection.
+// It is public, so this invoker is technically not needed for access purposes,
+// but using @Invoker keeps the call pattern consistent and avoids importing
+// ConnectScreen directly in FabricReconnectHandler.
 //
-// remap = false: we reference the method by its intermediary name rather
-// than trying to resolve it through Mojang mappings. This is the same
-// approach used by both old versions of this project and avoids the
-// access and signature issues that arise from Mojang-mapped names in the
-// 1.20.1 build environment.
-//
-// The method is static, so the interface method is also static with a
-// stub body. Mixin replaces the stub at class-load time — the throw is
-// never reached in normal operation.
+// Parameters (Mojang 1.20.1):
+//   parent      — screen to return to on failure (pass mc.screen)
+//   minecraft   — the Minecraft client instance
+//   serverAddress  — parsed server address
+//   serverData  — server data (name, ip, isLan)
+//   isQuickPlay — false for all normal Leap! Pad connections
 //
 // Usage (from FabricReconnectHandler):
-//   ConnectScreenInvoker.invokeConnect(mc.screen, mc, address, serverData, false);
+//   ConnectScreenInvoker.invokeStartConnecting(mc.screen, mc, address, serverData, false);
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConnectScreen;
@@ -31,10 +31,10 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 @Mixin(ConnectScreen.class)
 public interface ConnectScreenInvoker {
 
-    @Invoker(value = "method_36877", remap = false)
-    static void invokeConnect(Screen parent, Minecraft minecraft,
-                               ServerAddress serverAddress, ServerData serverData,
-                               boolean quickPlay) {
+    @Invoker("startConnecting")
+    static void invokeStartConnecting(Screen parent, Minecraft minecraft,
+                                       ServerAddress serverAddress, ServerData serverData,
+                                       boolean isQuickPlay) {
         throw new AssertionError("Mixin @Invoker stub — should never execute directly");
     }
 }
