@@ -85,7 +85,7 @@ public class LeapPadFabric implements ModInitializer {
             // server.getWorldPath(ROOT) returns the level folder itself (e.g.
             // saves/New World/). The registry dat lives inside that folder.
             worldSaveDir = server.getWorldPath(LevelResource.ROOT).toAbsolutePath();
-            PortalRegistry.load(worldSaveDir);
+            PortalRegistry.load();
 
             // N4: Inject ServerLevelProvider so TransferOrchestrator.onHostPrepComplete()
             // can pass a ServerLevel to MirrorPortalManager when building the mirror portal.
