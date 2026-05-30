@@ -9,6 +9,12 @@ package elder.leapp.network;
 // No logic lives here — these are pure data containers.
 // Having everything in one file ensures channel IDs never drift out of sync
 // between the send and receive sides.
+//
+// Added: PORTAL_INITIATE — S→C packet sent by LeapPortalBlock when a player
+// walks into a linked portal. Carries target address, portal UUID, and origin
+// address to the client so it can start the transfer sequence. This replaces
+// the PortalConnectTrigger bridge which required a client-side vanilla connect
+// trigger — the client now starts the sequence directly on receipt of this packet.
 
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.resources.ResourceLocation;
@@ -65,6 +71,13 @@ public class LeapPadPackets {
     public static final ResourceLocation PROFILE_DAT_PUSH =
         new ResourceLocation("leappad", "profile_dat_push");
 
+    // Portal path entry point — S→C
+    // Sent by LeapPortalBlock when a player walks into a linked portal.
+    // The client receives this and calls TransferOrchestrator.onConnectionAttempt()
+    // directly, starting the sequence without needing a vanilla connect trigger.
+    public static final ResourceLocation PORTAL_INITIATE =
+        new ResourceLocation("leappad", "portal_initiate");
+
     // -------------------------------------------------------
     // Packet data classes
     // Each class holds the fields for one packet direction.
@@ -73,10 +86,9 @@ public class LeapPadPackets {
     // -------------------------------------------------------
 
     // leappad:probe — C→S, Step 3
-    // Client's explicit external IP and whether Leap! Forward is installed.
     public static class ProbePacket {
-        public final String clientIp;       // Explicit IP — not read from socket
-        public final boolean leapForward;   // true = Leap! Forward present on this client
+        public final String clientIp;
+        public final boolean leapForward;
 
         public ProbePacket(String clientIp, boolean leapForward) {
             this.clientIp = clientIp;
@@ -94,11 +106,10 @@ public class LeapPadPackets {
     }
 
     // leappad:probe_response — S→C, Step 3
-    // Host's answer to the probe: can we connect, is Leap! Pad present, here is the transfer key.
     public static class ProbeResponsePacket {
-        public final boolean reachable;       // Did the probe reach a running world?
-        public final boolean hasLeapPad;      // Does that world have Leap! Pad installed?
-        public final String transferKey;      // UUID string — used to identify this transfer session
+        public final boolean reachable;
+        public final boolean hasLeapPad;
+        public final String transferKey;
 
         public ProbeResponsePacket(boolean reachable, boolean hasLeapPad, String transferKey) {
             this.reachable = reachable;
@@ -118,9 +129,8 @@ public class LeapPadPackets {
     }
 
     // leappad:warning_screen — S→C, Step 4
-    // Tells the client to show the "no Leap! Pad on target" warning screen.
     public static class WarningScreenPacket {
-        public final String targetAddress;   // Displayed on the warning screen so the player knows where they're going
+        public final String targetAddress;
 
         public WarningScreenPacket(String targetAddress) {
             this.targetAddress = targetAddress;
@@ -136,9 +146,8 @@ public class LeapPadPackets {
     }
 
     // leappad:transfer_cancel — C→S, Step 4
-    // Player dismissed the warning screen — cancel the transfer.
     public static class TransferCancelPacket {
-        public final String transferKey;   // Identifies which session to discard
+        public final String transferKey;
 
         public TransferCancelPacket(String transferKey) {
             this.transferKey = transferKey;
@@ -154,11 +163,10 @@ public class LeapPadPackets {
     }
 
     // leappad:profile_dat_send — C→S, Step 6
-    // Client sends their character profile dat blob to the host before vanilla join.
     public static class ProfileDatSendPacket {
-        public final String profileUuid;      // Which profile this dat belongs to
-        public final byte[] datBlob;          // Raw player .dat file bytes
-        public final boolean leapForward;     // Leap! Forward flag (duplicated here for host-side use)
+        public final String profileUuid;
+        public final byte[] datBlob;
+        public final boolean leapForward;
 
         public ProfileDatSendPacket(String profileUuid, byte[] datBlob, boolean leapForward) {
             this.profileUuid = profileUuid;
@@ -178,9 +186,8 @@ public class LeapPadPackets {
     }
 
     // leappad:uuid_list — S→C, Step 8
-    // Host sends its full list of registered portal UUIDs so the client can deconflict.
     public static class UuidListPacket {
-        public final String[] uuids;   // All UUIDs currently registered on the host world
+        public final String[] uuids;
 
         public UuidListPacket(String[] uuids) {
             this.uuids = uuids;
@@ -200,9 +207,8 @@ public class LeapPadPackets {
     }
 
     // leappad:uuid_confirm — C→S, Step 10
-    // Client sends back the agreed portal UUID after deconfliction.
     public static class UuidConfirmPacket {
-        public final String agreedUuid;   // Client's original UUID or newly generated replacement
+        public final String agreedUuid;
 
         public UuidConfirmPacket(String agreedUuid) {
             this.agreedUuid = agreedUuid;
@@ -218,13 +224,10 @@ public class LeapPadPackets {
     }
 
     // leappad:leapforward_cache — S→C, Step 10
-    // Host sends a chunk of the Leap! Forward environment package.
-    // Chunked transmission — each packet is one chunk of a larger transfer.
-    // Full protocol defined in Leap! Forward Phase 1.
     public static class LeapForwardCachePacket {
-        public final int chunkIndex;    // Which chunk this is (0-based)
-        public final int totalChunks;   // How many chunks in total
-        public final byte[] data;       // Raw bytes for this chunk
+        public final int chunkIndex;
+        public final int totalChunks;
+        public final byte[] data;
 
         public LeapForwardCachePacket(int chunkIndex, int totalChunks, byte[] data) {
             this.chunkIndex = chunkIndex;
@@ -244,9 +247,8 @@ public class LeapPadPackets {
     }
 
     // leappad:ready — C→S, Step 11
-    // Client signals that all pre-connection work is complete and it is ready to join.
     public static class ReadyPacket {
-        public final String transferKey;   // Identifies the session this ready signal belongs to
+        public final String transferKey;
 
         public ReadyPacket(String transferKey) {
             this.transferKey = transferKey;
@@ -262,8 +264,6 @@ public class LeapPadPackets {
     }
 
     // leappad:ready_echo — S→C, Step 12
-    // Host echoes the ready signal back. Dual confirmation: both sides know the handshake is done.
-    // Also serves as a hook point for companion mods (Leap! Forward, Leap! Backwards).
     public static class ReadyEchoPacket {
         public final String transferKey;
 
@@ -281,10 +281,8 @@ public class LeapPadPackets {
     }
 
     // leappad:profile_dat_push — S→C, Steps 14+15
-    // Host pushes current player dat to client on autosave cycle or on disconnect.
-    // Client saves to active profile if one is set; discards if not.
     public static class ProfileDatPushPacket {
-        public final byte[] datBlob;   // Raw player .dat file bytes
+        public final byte[] datBlob;
 
         public ProfileDatPushPacket(byte[] datBlob) {
             this.datBlob = datBlob;
@@ -296,6 +294,32 @@ public class LeapPadPackets {
 
         public static ProfileDatPushPacket decode(FriendlyByteBuf buf) {
             return new ProfileDatPushPacket(buf.readByteArray());
+        }
+    }
+
+    // leappad:portal_initiate — S→C, Portal path entry point
+    // Sent by LeapPortalBlock on the server thread when a player walks into a portal.
+    // The client receives this packet and calls TransferOrchestrator.onConnectionAttempt()
+    // directly — no vanilla connect trigger needed at this stage.
+    public static class PortalInitiatePacket {
+        public final String targetAddress;   // The world address this portal is linked to
+        public final String portalUuid;      // UUID of the portal the player walked through
+        public final String originAddress;   // This world's address (for mirror portal linking)
+
+        public PortalInitiatePacket(String targetAddress, String portalUuid, String originAddress) {
+            this.targetAddress = targetAddress;
+            this.portalUuid = portalUuid;
+            this.originAddress = originAddress;
+        }
+
+        public static void encode(PortalInitiatePacket pkt, FriendlyByteBuf buf) {
+            buf.writeUtf(pkt.targetAddress);
+            buf.writeUtf(pkt.portalUuid);
+            buf.writeUtf(pkt.originAddress);
+        }
+
+        public static PortalInitiatePacket decode(FriendlyByteBuf buf) {
+            return new PortalInitiatePacket(buf.readUtf(), buf.readUtf(), buf.readUtf());
         }
     }
 }

@@ -34,7 +34,16 @@ loom {
     }
 }
 
-// Override the default archive name so the output is leappad-fabric-0.1.0.jar
+// Substitute ${mod_version} in fabric.mod.json at build time so the version
+// shown in-game, in logs, and via /leappad version always matches gradle.properties.
+processResources {
+    inputs.property "mod_version", project.mod_version
+    filesMatching("fabric.mod.json") {
+        expand "mod_version": project.mod_version
+    }
+}
+
+// Override the default archive name so the output is leappad-fabric-[version].jar
 base {
     archivesName = 'leappad-fabric'
 }

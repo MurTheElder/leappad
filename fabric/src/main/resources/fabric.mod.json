@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "leappad",
-  "version": "0.1.0",
+  "version": "${mod_version}",
   "name": "Leap! Pad",
   "description": "Travel between friend-hosted worlds via prismarine portals.",
   "authors": ["MurTheElder"],

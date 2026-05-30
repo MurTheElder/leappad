@@ -4,17 +4,17 @@ package elder.leapp.portal;
 // The teal portal interior block — leappad:leap_portal.
 // Placed inside a valid prismarine frame when the frame is lit with fire.
 // When a player walks into this block, it checks if the portal is linked
-// and hands off via TransferOrchestrator.triggerPortalConnect() if so.
+// and sends a PORTAL_INITIATE packet to the client if so.
 //
 // Has a per-player re-entry guard to prevent the transfer from firing twice
 // on the same walk-through (players occupy multiple blocks at once).
 //
-// D2-B: This class no longer calls TransferOrchestrator.onConnectionAttempt()
-// directly. Instead it calls TransferOrchestrator.triggerPortalConnect(), which
-// delegates to the PortalConnectTrigger bridge injected from LeapPadFabricClient.
-// That bridge calls ConnectScreenMixin.setPendingPortalContext() then triggers
-// a vanilla connect, which the mixin intercepts once and drives the full sequence.
-// Non-portal connection routes are completely unaffected by this change.
+// Architecture change: LeapPortalBlock no longer calls TransferOrchestrator
+// or any connect bridge directly. Instead it sends a leappad:portal_initiate
+// packet to the player's client. The client receives this packet and calls
+// TransferOrchestrator.onConnectionAttempt() — the same entry point used
+// by direct connect and server list paths. All paths converge on the same
+// client-side sequence.
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.transfer.TransferOrchestrator;
@@ -41,44 +41,45 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class LeapPortalBlock extends Block {
 
-    // The axis property controls which direction the portal faces:
-    //   X = east-west frame (portal surface faces north/south — axis=x)
-    //   Z = north-south frame (portal surface faces east/west — axis=z)
-    // This matches the blockstate JSON which routes axis=x → leap_portal_ew model
-    // and axis=z → leap_portal_ns model.
     public static final EnumProperty<Direction.Axis> AXIS =
         BlockStateProperties.HORIZONTAL_AXIS;
 
-    // Per-player re-entry guard.
-    // A player UUID is added here when they enter a portal block.
-    // Removed after the transfer fires (or fails) so they can use portals again.
-    // ConcurrentHashMap.newKeySet() gives us a thread-safe Set.
+    // Per-player re-entry guard — prevents the transfer from firing twice
+    // for the same walk-through. Cleared when the transfer completes or fails.
     private static final Set<UUID> activeTriggers =
         Collections.newSetFromMap(new ConcurrentHashMap<>());
 
+    // Bridge interface — implemented in FabricNetworking and injected at startup.
+    // Keeps common code free of Fabric-specific imports.
+    public interface PortalPacketSender {
+        void sendPortalInitiate(ServerPlayer player, String targetAddress,
+                                String portalUuid, String originAddress);
+    }
+
+    private static PortalPacketSender portalPacketSender;
+
+    public static void setPortalPacketSender(PortalPacketSender sender) {
+        portalPacketSender = sender;
+    }
+
     public LeapPortalBlock(BlockBehaviour.Properties properties) {
         super(properties);
-        // Default block state: axis=z (north-south facing)
         this.registerDefaultState(
             this.stateDefinition.any().setValue(AXIS, Direction.Axis.Z)
         );
     }
 
-    // Register the AXIS property so it appears in block states
     @Override
     protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
         builder.add(AXIS);
     }
 
-    // Portal blocks have no collision — entities pass straight through
     @Override
     public VoxelShape getCollisionShape(BlockState state, BlockGetter level,
                                         BlockPos pos, CollisionContext context) {
         return Shapes.empty();
     }
 
-    // Called every tick for each entity standing inside this block.
-    // This is how we detect a player walking through the portal.
     @Override
     public void entityInside(BlockState state, Level level, BlockPos pos,
                               Entity entity) {
@@ -88,20 +89,17 @@ public class LeapPortalBlock extends Block {
 
         UUID playerId = player.getUUID();
 
-        // Re-entry guard — don't fire twice for the same walk-through
+        // Re-entry guard
         if (activeTriggers.contains(playerId)) return;
 
-        // Check if this portal is linked to a target address
+        // Check if this portal is linked
         String portalUuid = PortalRegistry.getUuidForPos(pos);
-        if (portalUuid == null) return; // No UUID registered for this block
+        if (portalUuid == null) return;
 
         String targetAddress = PortalRegistry.getLinkedAddress(portalUuid);
-        if (targetAddress == null || targetAddress.isEmpty()) {
-            // Portal exists but has no linked address — do nothing
-            return;
-        }
+        if (targetAddress == null || targetAddress.isEmpty()) return;
 
-        // Check cooldown — prevent re-use immediately after arriving
+        // Check cooldown
         if (TransferOrchestrator.isOnCooldown(playerId.toString())) {
             LeapPadCommon.LOGGER.info(
                 "[Leap! Pad] Player {} tried portal {} but is on cooldown.",
@@ -110,10 +108,9 @@ public class LeapPortalBlock extends Block {
             return;
         }
 
-        // Arm the re-entry guard before handing off
+        // Arm the re-entry guard
         activeTriggers.add(playerId);
 
-        // Get this world's address for the mirror portal origin link
         String originAddress = PortalRegistry.getThisWorldAddress();
 
         LeapPadCommon.LOGGER.info(
@@ -121,12 +118,18 @@ public class LeapPortalBlock extends Block {
             player.getName().getString(), portalUuid, targetAddress
         );
 
-        // D2-B: Hand off via bridge instead of calling the orchestrator directly.
-        // triggerPortalConnect() delegates to the PortalConnectTrigger injected at
-        // startup from LeapPadFabricClient. That bridge stores portal context in
-        // ConnectScreenMixin and triggers a vanilla connect on the client thread,
-        // which the mixin intercepts once and drives the full transfer sequence.
-        TransferOrchestrator.triggerPortalConnect(targetAddress, portalUuid, originAddress);
+        // Send portal_initiate packet to the client.
+        // The client receives this, calls TransferOrchestrator.onConnectionAttempt(),
+        // and runs the full pre-connection sequence before any vanilla connect fires.
+        if (portalPacketSender != null) {
+            portalPacketSender.sendPortalInitiate(player, targetAddress, portalUuid, originAddress);
+        } else {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] PortalPacketSender not injected — portal trigger dropped for {}.",
+                player.getName().getString()
+            );
+            activeTriggers.remove(playerId);
+        }
     }
 
     // Called by TransferOrchestrator when a transfer completes or fails,
