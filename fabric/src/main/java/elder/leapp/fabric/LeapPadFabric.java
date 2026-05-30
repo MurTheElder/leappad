@@ -127,7 +127,7 @@ public class LeapPadFabric implements ModInitializer {
             AutosavePushManager.onShutdown();
             ProbeListener.stop();
             if (worldSaveDir != null) {
-                PortalRegistry.save(worldSaveDir);
+                PortalRegistry.save();
             }
             LeapPadCommon.LOGGER.info("[Leap! Pad] World stopping — shutdown complete.");
         });
