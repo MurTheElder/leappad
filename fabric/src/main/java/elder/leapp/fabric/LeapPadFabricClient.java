@@ -67,13 +67,15 @@ public class LeapPadFabricClient implements ClientModInitializer {
                 FabricNetworking.sendUuidConfirmToServer(agreedUuid);
             }
             public void sendReady(String playerUuid, String transferKey) {
+                // Not called by the orchestrator — READY is sent via notifyHostReady()
+                // in the PlayerNotifier below. This method exists to satisfy the interface.
                 FabricNetworking.sendReadyToServer(transferKey);
             }
         });
 
         // VanillaConnectTrigger — called when the full sequence is complete.
         // FabricReconnectHandler disconnects from the current world and calls
-        // method_36877 via ConnectScreenInvoker to open a new ConnectScreen.
+        // ConnectScreen.startConnecting() directly (it is public in 1.20.1).
         // ConnectScreenMixin sees the session is COMPLETE and lets it through.
         TransferOrchestrator.setVanillaConnectTrigger(FabricReconnectHandler.INSTANCE);
 
