@@ -490,6 +490,8 @@ public class TransferOrchestrator {
             );
         }
     }
+
+    private static String generatePortalUuid() {
         String full = UUID.randomUUID().toString().replace("-", "");
         int len = elder.leapp.config.LeapPadConfig.portalDesignationActiveLength;
         if (full.length() >= len) return full.substring(0, len);
