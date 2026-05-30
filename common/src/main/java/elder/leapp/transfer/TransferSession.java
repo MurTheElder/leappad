@@ -47,8 +47,9 @@ public class TransferSession {
     // Whether Leap! Forward is present on this client
     public final boolean leapForwardPresent;
 
-    // The current step this session is at
-    public TransferState state;
+    // The current step this session is at.
+    // Volatile: written by probe/background threads, read by the scheduler timeout thread.
+    public volatile TransferState state;
 
     // Timestamp of when the current state was entered — used for timeout checking
     public long stateEnteredAt;
