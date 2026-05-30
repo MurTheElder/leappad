@@ -63,8 +63,8 @@ public class LeapPadFabricClient implements ClientModInitializer {
                                        byte[] datBlob, boolean leapForward) {
                 FabricNetworking.sendProfileDatToServer(profileUuid, datBlob, leapForward);
             }
-            public void sendUuidConfirm(String playerUuid, String agreedUuid) {
-                FabricNetworking.sendUuidConfirmToServer(agreedUuid);
+            public void sendUuidConfirm(String playerUuid, String agreedUuid, String originAddress) {
+                FabricNetworking.sendUuidConfirmToServer(agreedUuid, originAddress);
             }
             public void sendReady(String playerUuid, String transferKey) {
                 // Not called by the orchestrator — READY is sent via notifyHostReady()
