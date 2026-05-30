@@ -13,8 +13,7 @@ package elder.leapp.fabric.mixin;
 //      TransferOrchestrator.onConnectionAttempt() on a background thread.
 //   3. The orchestrator runs the full pre-connection sequence (probe, profile selector,
 //      dat send, host prep, UUID deconfliction, READY handshake).
-//   4. When complete, FabricReconnectHandler calls startConnecting() again via
-//      ConnectScreenInvoker.invokeStartConnecting().
+//   4. When complete, FabricReconnectHandler calls ConnectScreen.startConnecting() directly.
 //   5. This mixin fires again. TransferOrchestrator.isSessionComplete() returns true —
 //      the mixin does NOT cancel. Vanilla connect runs normally.
 //   6. TransferOrchestrator.onVanillaConnectCompleted() clears the session.
