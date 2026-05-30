@@ -36,6 +36,7 @@ import elder.leapp.LeapPadCommon;
 import elder.leapp.portal.LeapPortalBlock;
 import elder.leapp.portal.PortalRegistry;
 import elder.leapp.profile.ProfileManager;
+import net.minecraft.core.BlockPos;
 
 import java.util.Map;
 import java.util.Set;
@@ -156,6 +157,8 @@ public class TransferOrchestrator {
                 playerUuid, targetAddress
             );
             notifyPlayerPortalInactive(playerUuid);
+            // N2 fix: clear portal trigger on early exit — no session was created.
+            if (isPortalPath) clearPortalTrigger(playerUuid);
             return;
         }
 
@@ -169,6 +172,9 @@ public class TransferOrchestrator {
                 LeapPadCommon.LOGGER.info("[Leap! Pad] Target unreachable: {}", targetAddress);
                 pendingPlayerUuids.remove(playerUuid);
                 notifyPlayerPortalInactive(playerUuid);
+                // N2 fix: clear the portal re-entry guard so the player can try again.
+                // No session was created, so discardSession() won't be called.
+                if (isPortalPath) clearPortalTrigger(playerUuid);
             }
             case REACHABLE_NO_LP -> {
                 TransferSession noLpSession = new TransferSession(
@@ -222,18 +228,28 @@ public class TransferOrchestrator {
         String profileUuid = ProfileManager.getActiveProfileUuid();
         byte[] datBlob     = ProfileManager.getActiveDatBlob();
 
-        if (profileUuid == null || datBlob == null) {
-            // No profile dat to send — proceed based on path
-            onDatSendComplete(playerUuid, session);
-            return;
-        }
+        boolean hasProfile = profileUuid != null && datBlob != null;
 
-        if (packetSender != null) {
-            packetSender.sendProfileDat(playerUuid, profileUuid, datBlob, session.leapForwardPresent);
+        if (hasProfile) {
+            // Send the full profile dat to the host.
+            if (packetSender != null) {
+                packetSender.sendProfileDat(playerUuid, profileUuid, datBlob, session.leapForwardPresent);
+            }
+        } else if (session.isPortalPath) {
+            // N1 fix: no active profile, but this is a portal path.
+            // The host uses PROFILE_DAT_SEND as the trigger to start its prep work
+            // (step 7 → onHostPrepComplete). If we skip sending, the host never
+            // gets that signal and the session hangs in AWAITING_HOST_PREP.
+            // Send an empty packet (empty profile UUID, zero-byte blob) so the host
+            // receives the signal. The host will write nothing meaningful for an
+            // empty blob and still call onHostPrepComplete().
+            if (packetSender != null) {
+                packetSender.sendProfileDat(playerUuid, "", new byte[0], session.leapForwardPresent);
+            }
         }
+        // Non-portal path with no profile: nothing is sent. onDatSendComplete()
+        // routes directly to AWAITING_READY_ECHO below.
 
-        // Portal path: wait for host prep (steps 7-10) before proceeding.
-        // Non-portal path: skip host prep, send READY immediately.
         onDatSendComplete(playerUuid, session);
     }
 
@@ -273,6 +289,47 @@ public class TransferOrchestrator {
         if (!session.isPortalPath) return;
 
         session.advanceTo(TransferSession.TransferState.AWAITING_UUID_LIST);
+
+        // N4: Build the mirror portal (step 7).
+        // MirrorPortalManager.placePortal() needs a ServerLevel reference which
+        // common code cannot hold directly. We delegate to the ServerLevelProvider
+        // bridge which is injected from the fabric subproject (LeapPadFabric).
+        // The origin portal's first corner is used as the starting XZ for placement.
+        if (serverLevelProvider != null) {
+            String originPortalUuid = session.originPortalUuid;
+            elder.leapp.portal.PortalRegistry.PortalEntry originEntry =
+                PortalRegistry.getEntry(originPortalUuid);
+
+            BlockPos originCorner = (originEntry != null && !originEntry.corners.isEmpty())
+                ? originEntry.corners.get(0)
+                : new BlockPos(0, 64, 0); // Fallback if origin portal not found
+
+            // placePortal returns a PlacementOutcome with a provisional UUID.
+            // We register it as pending so updateMirrorPortalUuid() can rename it
+            // to the agreed UUID when uuid_confirm arrives at step 10.
+            serverLevelProvider.withOverworldLevel(level -> {
+                elder.leapp.portal.MirrorPortalManager.PlacementOutcome outcome =
+                    elder.leapp.portal.MirrorPortalManager.placePortal(
+                        originCorner, session.originAddress, level
+                    );
+                if (outcome.result == elder.leapp.portal.MirrorPortalManager.PlacementResult.SUCCESS) {
+                    PortalRegistry.registerPendingMirrorPortal(playerUuid, outcome.portalUuid);
+                    LeapPadCommon.LOGGER.info(
+                        "[Leap! Pad] Mirror portal built for player {} — provisional UUID: {}",
+                        playerUuid, outcome.portalUuid
+                    );
+                } else {
+                    LeapPadCommon.LOGGER.warn(
+                        "[Leap! Pad] Mirror portal placement failed for player {} — " +
+                        "player will spawn at world default spawn.", playerUuid
+                    );
+                }
+            });
+        } else {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] ServerLevelProvider not injected — mirror portal not built for {}.", playerUuid
+            );
+        }
 
         // Collect all portal UUIDs from the registry and send them to the client.
         String[] uuids = PortalRegistry.getAll().keySet().toArray(new String[0]);
@@ -319,7 +376,8 @@ public class TransferOrchestrator {
 
         session.agreedPortalUuid = agreedUuid;
         session.advanceTo(TransferSession.TransferState.SENDING_UUID);
-        if (packetSender != null) packetSender.sendUuidConfirm(playerUuid, agreedUuid);
+        // N4: include originAddress so the host can link the mirror portal back.
+        if (packetSender != null) packetSender.sendUuidConfirm(playerUuid, agreedUuid, session.originAddress);
 
         // UUID confirm sent (step 10). All client-side pre-connection work is done.
         // Advance to AWAITING_READY_ECHO and send the READY signal (step 11).
@@ -415,22 +473,23 @@ public class TransferOrchestrator {
     private static void discardSession(String playerUuid, TransferSession session) {
         activeSessions.remove(playerUuid);
         pendingPlayerUuids.remove(playerUuid);
-
-        // Clear the portal re-entry guard if this was a portal-path session.
-        // Without this, the player's UUID stays in LeapPortalBlock.activeTriggers
-        // permanently and they can never use a portal again in that session.
         if (session != null && session.isPortalPath) {
-            try {
-                LeapPortalBlock.clearTrigger(UUID.fromString(playerUuid));
-            } catch (IllegalArgumentException e) {
-                LeapPadCommon.LOGGER.warn(
-                    "[Leap! Pad] Could not clear portal trigger for {}: bad UUID format.", playerUuid
-                );
-            }
+            clearPortalTrigger(playerUuid);
         }
     }
 
-    private static String generatePortalUuid() {
+    // B4/N2: Clears the portal re-entry guard in LeapPortalBlock.
+    // Called from discardSession() for portal-path sessions, and directly
+    // for early-exit paths (UNREACHABLE, bad address) where no session exists.
+    private static void clearPortalTrigger(String playerUuid) {
+        try {
+            LeapPortalBlock.clearTrigger(UUID.fromString(playerUuid));
+        } catch (IllegalArgumentException e) {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] Could not clear portal trigger for {}: bad UUID format.", playerUuid
+            );
+        }
+    }
         String full = UUID.randomUUID().toString().replace("-", "");
         int len = elder.leapp.config.LeapPadConfig.portalDesignationActiveLength;
         if (full.length() >= len) return full.substring(0, len);
@@ -451,7 +510,7 @@ public class TransferOrchestrator {
     public interface PacketSender {
         void sendProfileDat(String playerUuid, String profileUuid,
                             byte[] datBlob, boolean leapForward);
-        void sendUuidConfirm(String playerUuid, String agreedUuid);
+        void sendUuidConfirm(String playerUuid, String agreedUuid, String originAddress);
         void sendReady(String playerUuid, String transferKey);
     }
 
@@ -467,6 +526,13 @@ public class TransferOrchestrator {
         void sendUuidListToClient(String playerUuid, String[] uuids);
     }
 
+    // N4: Provides access to the server's overworld ServerLevel for
+    // MirrorPortalManager. Common code cannot hold a ServerLevel reference
+    // directly — injected from LeapPadFabric at world start.
+    public interface ServerLevelProvider {
+        void withOverworldLevel(java.util.function.Consumer<net.minecraft.server.level.ServerLevel> consumer);
+    }
+
     public interface PlayerNotifier {
         void showPortalInactive(String playerUuid);
         void showNoLeapPad(String playerUuid, String targetAddress);
@@ -478,12 +544,14 @@ public class TransferOrchestrator {
     private static PacketSender          packetSender;
     private static VanillaConnectTrigger vanillaConnectTrigger;
     private static HostPrepNotifier      hostPrepNotifier;
+    private static ServerLevelProvider   serverLevelProvider;
     private static PlayerNotifier        playerNotifier;
 
-    public static void setPacketSender(PacketSender s)                    { packetSender = s; }
-    public static void setVanillaConnectTrigger(VanillaConnectTrigger t)  { vanillaConnectTrigger = t; }
-    public static void setHostPrepNotifier(HostPrepNotifier n)            { hostPrepNotifier = n; }
-    public static void setPlayerNotifier(PlayerNotifier n)                { playerNotifier = n; }
+    public static void setPacketSender(PacketSender s)                       { packetSender = s; }
+    public static void setVanillaConnectTrigger(VanillaConnectTrigger t)     { vanillaConnectTrigger = t; }
+    public static void setHostPrepNotifier(HostPrepNotifier n)               { hostPrepNotifier = n; }
+    public static void setServerLevelProvider(ServerLevelProvider p)         { serverLevelProvider = p; }
+    public static void setPlayerNotifier(PlayerNotifier n)                   { playerNotifier = n; }
 
     private static void notifyPlayerPortalInactive(String playerUuid) {
         if (playerNotifier != null) playerNotifier.showPortalInactive(playerUuid);
