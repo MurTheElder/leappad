@@ -78,20 +78,13 @@ jobs:
           path: ${{ env.JAR_PATH }}
           if-no-files-found: error
 
-      - name: Create and push git tag
+      - name: Create GitHub Release and attach jar
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag ${{ env.TAG }}
-          git push origin ${{ env.TAG }}
-
-      - name: Create GitHub Release and tag
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG }}
-          name: Leap! Pad ${{ env.TAG }}
-          draft: true
-          files: ${{ env.JAR_PATH }}
-          body: |
-            Leap! Pad Fabric ${{ env.MOD_VERSION }}
-            Built from commit ${{ github.sha }}
+          gh release create ${{ env.TAG }} \
+            --title "Leap! Pad ${{ env.TAG }}" \
+            --notes "Leap! Pad Fabric ${{ env.MOD_VERSION }}
+          Built from commit ${{ github.sha }}" \
+            --draft \
+            "${{ env.JAR_PATH }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
