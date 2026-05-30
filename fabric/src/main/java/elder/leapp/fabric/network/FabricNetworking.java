@@ -11,11 +11,16 @@ package elder.leapp.fabric.network;
 //   - LeapPortalBlock.PortalPacketSender (new — sends portal_initiate S→C)
 //
 // Changes from Phase 2:
-//   - Added leappad:portal_initiate client-side receiver. When received, calls
-//     TransferOrchestrator.onConnectionAttempt() directly — the portal path entry.
+//   - Added leappad:portal_initiate client-side receiver (portal path entry).
 //   - Added sendPortalInitiate() outbound helper for LeapPortalBlock.
 //   - ST3: PROFILE_DAT_SEND receiver writes blob to playerdata/[UUID].dat.
 //   - ST4: UUID_CONFIRM receiver calls PortalRegistry.updateMirrorPortalUuid().
+//   - B1+B2 fix: PROFILE_DAT_SEND receiver now calls
+//     TransferOrchestrator.onHostPrepComplete() after writing the dat file.
+//     This triggers the host to send the UUID list to the client (step 8),
+//     completing the host prep phase the sequence was previously skipping.
+//   - B1+B2 fix: HOST_PREP_NOTIFIER static instance added — implements
+//     TransferOrchestrator.HostPrepNotifier using sendUuidList().
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.network.LeapPadPackets;
@@ -182,6 +187,13 @@ public class FabricNetworking {
                             player.getName().getString(), e.getMessage()
                         );
                     }
+
+                    // B1+B2 fix: trigger host prep completion (step 7 → step 8).
+                    // On the portal path this causes the orchestrator to send the
+                    // UUID list to the client, starting UUID deconfliction.
+                    // On the non-portal path onHostPrepComplete() is a no-op
+                    // (session.isPortalPath == false).
+                    TransferOrchestrator.onHostPrepComplete(player.getStringUUID());
                 });
             }
         );
