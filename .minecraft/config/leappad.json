@@ -1,0 +1,41 @@
+{
+  "probePortOffset": 1,
+  "probePortFallbacks": [
+    37,
+    41,
+    43,
+    47,
+    53
+  ],
+  "portalCooldownSeconds": 15,
+  "maxPlacementSearchRadius": 16,
+  "nonObstructiveBlocks": [
+    "minecraft:air",
+    "minecraft:cave_air",
+    "minecraft:void_air",
+    "minecraft:water",
+    "minecraft:lava",
+    "minecraft:grass",
+    "minecraft:tall_grass",
+    "minecraft:fern",
+    "minecraft:large_fern",
+    "minecraft:dead_bush",
+    "minecraft:vine",
+    "minecraft:snow",
+    "minecraft:torch",
+    "minecraft:wall_torch",
+    "minecraft:soul_torch",
+    "minecraft:soul_wall_torch",
+    "minecraft:lantern",
+    "minecraft:soul_lantern",
+    "leappad:leap_portal"
+  ],
+  "frameBlocks": [
+    "minecraft:prismarine",
+    "minecraft:prismarine_bricks",
+    "minecraft:dark_prismarine"
+  ],
+  "playerDatPushTime": 1,
+  "playerDatCyclic": 1,
+  "portalDesignationActiveLength": 5
+}
