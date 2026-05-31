@@ -14,6 +14,7 @@ package elder.leapp.fabric.mixin;
 //      the profile selector closes, so the selection isn't wiped before it can be used.
 //      The suppression flag lives locally in this Mixin — nothing else touches it.
 
+import elder.leapp.fabric.ui.ProfileScreen;
 import elder.leapp.profile.ProfileManager;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.TitleScreen;
@@ -79,9 +80,7 @@ public abstract class TitleScreenMixin extends Screen {
     // The title screen stays underneath — it does not re-render.
     @Unique
     private void openProfileManager() {
-        // ProfileScreen is wired in the UI build step.
-        // For now, log the action so we know the button fires correctly.
         elder.leapp.LeapPadCommon.LOGGER.info("[Leap! Pad] Character Profiles button clicked.");
-        // minecraft.setScreen(new ProfileScreen(this)); — added when ProfileScreen is built
+        this.minecraft.setScreen(new ProfileScreen((Screen)(Object)this));
     }
 }
