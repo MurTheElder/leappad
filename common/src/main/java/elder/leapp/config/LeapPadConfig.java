@@ -7,7 +7,6 @@ package elder.leapp.config;
 // message naming the key, the value provided, and what was expected.
 // All values are accessible as static fields throughout the mod after load.
 
-import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -15,7 +14,6 @@ import elder.leapp.LeapPadCommon;
 
 import java.io.IOException;
 import java.io.Reader;
-import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -58,34 +56,11 @@ public class LeapPadConfig {
     // Internals
     // -------------------------------------------------------
 
-    private static final Gson GSON = new Gson();
-
-    // Default nonObstructiveBlocks list — finalized during Phase 4 playtesting.
-    // Contains blocks that should be treated as empty space for portal placement.
-    private static final String[] DEFAULT_NON_OBSTRUCTIVE = {
-        "minecraft:air",
-        "minecraft:cave_air",
-        "minecraft:void_air",
-        "minecraft:water",
-        "minecraft:lava",
-        "minecraft:grass",
-        "minecraft:tall_grass",
-        "minecraft:fern",
-        "minecraft:large_fern",
-        "minecraft:dead_bush",
-        "minecraft:vine",
-        "minecraft:snow",
-        "minecraft:torch",
-        "minecraft:wall_torch",
-        "minecraft:soul_torch",
-        "minecraft:soul_wall_torch",
-        "minecraft:lantern",
-        "minecraft:soul_lantern",
-        "leappad:leap_portal"
-    };
-
-    // Called on world start. Loads or creates leappad.json and validates all values.
-    // Throws IllegalStateException on any validation failure — this stops the world from starting.
+    // -------------------------------------------------------
+    // Called on world start. Loads or creates leappad.json from the bundled
+    // jar resource if absent, then validates all values.
+    // Throws IllegalStateException on any validation failure.
+    // -------------------------------------------------------
     public static void load(Path configDir) {
         Path configFile = configDir.resolve("leappad.json");
 
@@ -101,17 +76,29 @@ public class LeapPadConfig {
                 );
             }
         } else {
-            // File does not exist — write a default config and use it
+            // File does not exist — copy the bundled default from the jar to config dir.
+            // The bundled file lives at /leappad.json in the jar resources.
             LeapPadCommon.LOGGER.info("[Leap! Pad] No leappad.json found — writing default config.");
-            json = buildDefaults();
-            try {
-                Files.createDirectories(configDir);
-                try (Writer writer = Files.newBufferedWriter(configFile)) {
-                    new Gson().toJson(json, writer);
+            try (java.io.InputStream in = LeapPadConfig.class.getResourceAsStream("/leappad.json")) {
+                if (in == null) {
+                    throw new IllegalStateException(
+                        "[Leap! Pad] Bundled leappad.json not found in jar. This is a packaging error."
+                    );
                 }
+                Files.createDirectories(configDir);
+                Files.copy(in, configFile);
+                LeapPadCommon.LOGGER.info("[Leap! Pad] Default leappad.json written to config folder.");
             } catch (IOException e) {
                 throw new IllegalStateException(
                     "[Leap! Pad] Failed to write default leappad.json: " + e.getMessage(), e
+                );
+            }
+            // Now read back what we just wrote
+            try (Reader reader = Files.newBufferedReader(configFile)) {
+                json = JsonParser.parseReader(reader).getAsJsonObject();
+            } catch (IOException e) {
+                throw new IllegalStateException(
+                    "[Leap! Pad] Failed to read leappad.json after writing defaults: " + e.getMessage(), e
                 );
             }
         }
@@ -218,37 +205,4 @@ public class LeapPadConfig {
         return result.toArray(new String[0]);
     }
 
-    // -------------------------------------------------------
-    // Default config builder
-    // -------------------------------------------------------
-
-    private static JsonObject buildDefaults() {
-        JsonObject obj = new JsonObject();
-        obj.addProperty("probePortOffset", 1);
-
-        com.google.gson.JsonArray fallbacks = new com.google.gson.JsonArray();
-        for (int f : new int[]{37, 41, 43, 47, 53}) fallbacks.add(f);
-        obj.add("probePortFallbacks", fallbacks);
-
-        obj.addProperty("portalCooldownSeconds", 15);
-        obj.addProperty("maxPlacementSearchRadius", 16);
-
-        com.google.gson.JsonArray nonObstr = new com.google.gson.JsonArray();
-        for (String s : DEFAULT_NON_OBSTRUCTIVE) nonObstr.add(s);
-        obj.add("nonObstructiveBlocks", nonObstr);
-
-        com.google.gson.JsonArray frames = new com.google.gson.JsonArray();
-        for (String s : new String[]{
-            "minecraft:prismarine",
-            "minecraft:prismarine_bricks",
-            "minecraft:dark_prismarine"
-        }) frames.add(s);
-        obj.add("frameBlocks", frames);
-
-        obj.addProperty("playerDatPushTime", 1);
-        obj.addProperty("playerDatCyclic", 1);
-        obj.addProperty("portalDesignationActiveLength", 5);
-
-        return obj;
-    }
 }
