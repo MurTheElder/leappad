@@ -2,49 +2,36 @@ package elder.leapp.fabric.mixin;
 
 // EditWorldScreenMixin.java
 // Injects a "Leap! Pad LAN Port" text field into the Edit World screen.
-// When the player types a port number here, it is saved to
-// [world save]/leappad/leappad_lan.json immediately.
-// On next world load, LeapPadFabric reads this config and auto-opens the
-// world to LAN on the specified port.
 //
-// World path resolution:
-//   EditWorldScreen holds a LevelSummary. We shadow that field to get
-//   the world's level ID, then resolve the save path via
-//   Minecraft.getInstance().getLevelSource().getLevelPath(levelId).
-//
-// Field placement:
-//   Below the existing buttons, left-aligned, 110px wide, 20px tall.
-//   Hint text: "e.g. 25565 (0 or -1 = disabled)"
-//
-// Input validation:
-//   Only digits and '-' are accepted. Non-integer input is silently ignored
-//   on save — the field just won't update the config if it can't be parsed.
+// World path resolution (no @Shadow, no reflection):
+//   We inject at the HEAD of the constructor to capture the LevelSummary
+//   into a @Unique field. From there we use LevelSummary.getLevelId() with
+//   Minecraft.getInstance().getLevelSource().createAccess(levelId) to get
+//   the world save path — all public APIs, no private access needed.
 
 import elder.leapp.config.WorldLanConfig;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.EditWorldScreen;
-import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.storage.LevelSummary;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.io.IOException;
 import java.nio.file.Path;
 
 @Mixin(EditWorldScreen.class)
 public abstract class EditWorldScreenMixin extends Screen {
 
-    // Shadow the LevelSummary field on EditWorldScreen so we can get the level ID.
-    // The field name under Mojang 1.20.1 mappings is "summary".
-    @Shadow
-    private LevelSummary summary;
+    // Captured from constructor injection — avoids @Shadow and reflection entirely.
+    @Unique
+    private LevelSummary leappad_levelSummary;
 
     @Unique
     private EditBox leappad_lanPortField;
@@ -56,16 +43,21 @@ public abstract class EditWorldScreenMixin extends Screen {
         super(title);
     }
 
+    // Capture the LevelSummary as early as possible.
+    // EditWorldScreen constructor signature: (Screen lastScreen, LevelSummary summary)
+    @Inject(method = "<init>", at = @At("TAIL"))
+    private void leappad_captureLevel(Screen lastScreen, LevelSummary summary,
+                                       CallbackInfo ci) {
+        this.leappad_levelSummary = summary;
+    }
+
     @Inject(method = "init", at = @At("TAIL"))
     private void leappad_addLanPortField(CallbackInfo ci) {
-        // Resolve the world save directory from the level ID
         Path worldSaveDir = resolveWorldSaveDir();
         if (worldSaveDir == null) return;
 
-        // Load existing config so we can pre-fill the field
         leappad_lanConfig = WorldLanConfig.load(worldSaveDir);
 
-        // Place the field below the existing button area
         int fieldX = 10;
         int fieldY = this.height - 48;
 
@@ -78,21 +70,18 @@ public abstract class EditWorldScreenMixin extends Screen {
         leappad_lanPortField.setMaxLength(6);
         leappad_lanPortField.setHint(Component.literal("e.g. 25565 (0 or -1 = disabled)"));
 
-        // Pre-fill with current value if configured
         if (leappad_lanConfig.lanPort != 0) {
             leappad_lanPortField.setValue(String.valueOf(leappad_lanConfig.lanPort));
         }
 
-        // Save on every keystroke
         final Path capturedDir = worldSaveDir;
         leappad_lanPortField.setResponder(text -> {
             if (leappad_lanConfig == null) return;
             try {
-                leappad_lanConfig.lanPort = text.trim().isEmpty() ? 0 : Integer.parseInt(text.trim());
+                leappad_lanConfig.lanPort = text.trim().isEmpty()
+                    ? 0 : Integer.parseInt(text.trim());
                 leappad_lanConfig.save(capturedDir);
-            } catch (NumberFormatException ignored) {
-                // Non-integer input — don't update config
-            }
+            } catch (NumberFormatException ignored) {}
         });
 
         this.addRenderableWidget(leappad_lanPortField);
@@ -114,14 +103,21 @@ public abstract class EditWorldScreenMixin extends Screen {
     @Unique
     private Path resolveWorldSaveDir() {
         try {
-            if (summary == null) return null;
-            String levelId = summary.getLevelId();
-            return Minecraft.getInstance()
-                .getLevelSource()
-                .getLevelPath(levelId);
-        } catch (Exception e) {
+            if (leappad_levelSummary == null) return null;
+            String levelId = leappad_levelSummary.getLevelId();
+            // createAccess returns a LevelStorageAccess — getLevelPath(ROOT) gives
+            // the world save directory. We close the access immediately after.
+            try (var access = Minecraft.getInstance()
+                    .getLevelSource()
+                    .createAccess(levelId)) {
+                return access.getLevelPath(
+                    net.minecraft.world.level.storage.LevelResource.ROOT
+                ).toAbsolutePath();
+            }
+        } catch (IOException | Exception e) {
             elder.leapp.LeapPadCommon.LOGGER.warn(
-                "[Leap! Pad] EditWorldScreenMixin: could not resolve world save dir: {}", e.getMessage()
+                "[Leap! Pad] EditWorldScreenMixin: could not resolve world save dir: {}",
+                e.getMessage()
             );
             return null;
         }
