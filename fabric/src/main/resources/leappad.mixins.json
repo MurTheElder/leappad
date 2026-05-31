@@ -10,6 +10,7 @@
   "client": [
     "ConnectScreenInvoker",
     "ConnectScreenMixin",
+    "EditWorldScreenMixin",
     "TitleScreenMixin"
   ],
   "server": [],
