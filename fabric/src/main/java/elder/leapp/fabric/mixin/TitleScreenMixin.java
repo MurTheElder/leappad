@@ -43,8 +43,8 @@ public abstract class TitleScreenMixin extends Screen {
     // the vanilla Singleplayer / Multiplayer buttons.
     @Inject(method = "init", at = @At("TAIL"))
     private void leappad_addProfilesButton(CallbackInfo ci) {
-        // Position the button below the standard button row.
-        // X: centred on screen. Y: 132 puts it just below the multiplayer button area.
+        // Bottom-left placement: 8px from left edge, 52px from bottom.
+        // Sits below the standard auxiliary mod button row (height - 28) with 4px clearance.
         // Width 200, height 20 — standard Minecraft button dimensions.
         this.addRenderableWidget(Button.builder(
             Component.literal("Character Profiles"),
@@ -56,7 +56,7 @@ public abstract class TitleScreenMixin extends Screen {
                 // (ProfileScreen is implemented in the profile UI layer — wired in a later step)
                 openProfileManager();
             })
-            .bounds(this.width / 2 - 100, 132, 200, 20)
+            .bounds(8, this.height - 52, 200, 20)
             .build()
         );
     }
