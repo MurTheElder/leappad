@@ -114,7 +114,7 @@ public abstract class EditWorldScreenMixin extends Screen {
                     net.minecraft.world.level.storage.LevelResource.ROOT
                 ).toAbsolutePath();
             }
-        } catch (IOException | Exception e) {
+        } catch (Exception e) {
             elder.leapp.LeapPadCommon.LOGGER.warn(
                 "[Leap! Pad] EditWorldScreenMixin: could not resolve world save dir: {}",
                 e.getMessage()
