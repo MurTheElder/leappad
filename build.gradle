@@ -5,16 +5,6 @@
 plugins {
     id 'fabric-loom' version "${fabric_loom_version}" apply false
 }
-plugins {
-    id 'com.gradle.develocity' version '3.19'
-}
-
-develocity {
-    buildScan {
-        termsOfUseUrl = 'https://gradle.com/terms-of-service'
-        termsOfUseAgree = 'yes'
-    }
-}
 // Apply shared settings to every subproject
 subprojects {
     apply plugin: 'java'
