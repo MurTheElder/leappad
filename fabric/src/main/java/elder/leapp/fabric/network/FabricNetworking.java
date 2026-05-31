@@ -339,6 +339,27 @@ public class FabricNetworking {
         (player, targetAddress, portalUuid, originAddress) ->
             sendPortalInitiate(player, targetAddress, portalUuid, originAddress);
 
+    // F2: Broadcasts a chat message to all OP-level players on the server
+    // confirming LAN auto-open. Also activates the client-side HUD overlay.
+    // In a listen server context, the host IS the local client, so we can
+    // call LanStatusHud.setActive() directly via Minecraft.execute().
+    public static void broadcastLanOpenToOps(net.minecraft.server.MinecraftServer server, int port) {
+        net.minecraft.network.chat.Component message = net.minecraft.network.chat.Component.literal(
+            "[Leap! Pad] World opened to LAN on port " + port +
+            ". Use /leappad close to stop accepting connections."
+        );
+        server.getPlayerList().getPlayers().forEach(player -> {
+            if (player.hasPermissions(2)) {
+                player.sendSystemMessage(message);
+            }
+        });
+        // Activate HUD overlay on the local client (listen server — same JVM)
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc != null) {
+            mc.execute(() -> elder.leapp.fabric.ui.LanStatusHud.setActive(port));
+        }
+    }
+
     private static byte[] readPlayerDat(ServerPlayer player) {
         try {
             Path datFile = player.getServer()
