@@ -83,6 +83,9 @@ public class FabricCommandRegistry {
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
                     PortBindingCache.unbindAllPorts();
+                    // Clear the LAN status HUD on the client — world is no longer open
+                    net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+                    if (mc != null) mc.execute(() -> elder.leapp.fabric.ui.LanStatusHud.clear());
                     ctx.getSource().sendSuccess(
                         () -> Component.literal("[Leap! Pad] All ports unbound."), true
                     );
