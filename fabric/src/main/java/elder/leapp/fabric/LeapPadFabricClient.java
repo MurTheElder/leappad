@@ -20,6 +20,7 @@ import elder.leapp.LeapPadCommon;
 import elder.leapp.fabric.network.FabricNetworking;
 import elder.leapp.fabric.registry.FabricRegistrar;
 import elder.leapp.fabric.transfer.FabricReconnectHandler;
+import elder.leapp.fabric.ui.LanStatusHud;
 import elder.leapp.fabric.ui.PortalProfileSelectorScreen;
 import elder.leapp.fabric.ui.ProfileSelectorScreen;
 import elder.leapp.portal.LeapPortalBlock;
@@ -124,6 +125,11 @@ public class LeapPadFabricClient implements ClientModInitializer {
         // so the client can start the sequence before any vanilla connect fires.
         // -------------------------------------------------------
         LeapPortalBlock.setPortalPacketSender(FabricNetworking.PORTAL_PACKET_SENDER);
+
+        // Register the LAN status HUD overlay.
+        // Renders "[Leap! Pad] Open on port XXXXX" in the top-left corner for OP players.
+        // Active only when LAN auto-open has fired. Hides on F3.
+        LanStatusHud.register();
 
         LeapPadCommon.LOGGER.info("Leap! Pad (Fabric client) ready.");
     }
