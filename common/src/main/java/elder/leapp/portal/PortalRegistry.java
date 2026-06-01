@@ -122,6 +122,22 @@ public class PortalRegistry {
         }
     }
 
+    // SS6: Called on SERVER_STOPPING to clean up any transfer sessions that were
+    // interrupted before UUID finalisation. Provisional portal UUIDs are already
+    // real registry entries placed by MirrorPortalManager — there is no boolean
+    // flag distinguishing them from standard portals. We simply clear the pending
+    // tracking map so they are treated as standard (possibly unlinked) portals
+    // on next world load. Orphaned portals are reachable via /portalid commands.
+    public static void promotePendingMirrorPortals() {
+        if (!pendingMirrorPortals.isEmpty()) {
+            LeapPadCommon.LOGGER.info(
+                "[Leap! Pad] Promoting {} unfinished provisional portal(s) to standard entries.",
+                pendingMirrorPortals.size()
+            );
+            pendingMirrorPortals.clear();
+        }
+    }
+
     // Writes the current registry state to disk.
     // Called after any modification that needs to survive a world restart.
     public static void save() {
