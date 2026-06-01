@@ -69,8 +69,9 @@ public class FabricNetworking {
             LeapPadPackets.UUID_LIST,
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.UuidListPacket pkt = LeapPadPackets.UuidListPacket.decode(buf);
-                String playerUuid = client.player == null ? "" :
-                    client.player.getUUID().toString();
+                // B1 fix: use getUser().getGameProfile().getId() — available at all lifecycle
+                // points, no null check needed. Eliminates silent empty-string fallback.
+                String playerUuid = client.getUser().getGameProfile().getId().toString();
                 client.execute(() ->
                     TransferOrchestrator.onUuidListReceived(playerUuid, pkt.uuids)
                 );
@@ -98,8 +99,8 @@ public class FabricNetworking {
             LeapPadPackets.READY_ECHO,
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.ReadyEchoPacket pkt = LeapPadPackets.ReadyEchoPacket.decode(buf);
-                String playerUuid = client.player == null ? "" :
-                    client.player.getUUID().toString();
+                // B1 fix: use getUser().getGameProfile().getId()
+                String playerUuid = client.getUser().getGameProfile().getId().toString();
                 client.execute(() -> {
                     LeapPadCommon.LOGGER.info(
                         "[Leap! Pad] READY echo received for player {} (key: {})",
@@ -134,8 +135,8 @@ public class FabricNetworking {
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.PortalInitiatePacket pkt =
                     LeapPadPackets.PortalInitiatePacket.decode(buf);
-                String playerUuid = client.player == null ? "" :
-                    client.player.getUUID().toString();
+                // B1 fix: use getUser().getGameProfile().getId()
+                String playerUuid = client.getUser().getGameProfile().getId().toString();
                 client.execute(() -> {
                     LeapPadCommon.LOGGER.info(
                         "[Leap! Pad] portal_initiate received for player {} → {}",
