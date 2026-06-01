@@ -82,7 +82,8 @@ public class ProfileSelectorScreen extends Screen {
                         }
                     }
                     joinWithProfile();
-                }
+                },
+                ProfileManager.getAllProfiles() // S2: duplicate name check
             ))
         ).bounds(centerX - 50, buttonY, 100, 20).build());
 
