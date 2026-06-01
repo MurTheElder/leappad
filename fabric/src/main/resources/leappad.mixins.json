@@ -8,7 +8,6 @@
     "ItemEntityTickMixin"
   ],
   "client": [
-    "ConnectScreenInvoker",
     "ConnectScreenMixin",
     "EditWorldScreenMixin",
     "TitleScreenMixin"

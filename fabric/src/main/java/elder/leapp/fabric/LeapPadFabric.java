@@ -29,6 +29,7 @@ import elder.leapp.probe.PortBindingCache;
 import elder.leapp.profile.AutosavePushManager;
 import elder.leapp.transfer.ProbeListener;
 import elder.leapp.transfer.TransferOrchestrator;
+import elder.leapp.transfer.TransferSessionManager;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
@@ -83,6 +84,10 @@ public class LeapPadFabric implements ModInitializer {
             // Must be called AFTER PortBindingCache.init() so the listener binds the
             // correct ports. Starting before init() would use port 0 as the game port.
             ProbeListener.start();
+
+            // SS1 fix: clear any stale sessions from a previous world load in the same JVM.
+            // Also resets the timeout scheduler state for a clean start.
+            TransferSessionManager.init();
 
             // C6: Load portal registry from the world save directory.
             // server.getWorldPath(ROOT) returns the level folder itself (e.g.
@@ -154,6 +159,8 @@ public class LeapPadFabric implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             AutosavePushManager.onShutdown();
             ProbeListener.stop();
+            // SS3+SS4 fix: clear cooldowns and shut down the timeout scheduler cleanly.
+            TransferSessionManager.shutdown();
             if (worldSaveDir != null) {
                 PortalRegistry.save();
             }

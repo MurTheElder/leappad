@@ -56,11 +56,12 @@ public class ConnectScreenMixin {
                                                           boolean isQuickPlay,
                                                           CallbackInfo ci) {
 
-        // No player present — early launch call before the player exists.
-        // Let vanilla run normally.
-        if (minecraft.player == null) return;
-
-        String playerUuid = minecraft.player.getUUID().toString();
+        // B1 fix: use getUser().getGameProfile().getId() instead of mc.player.getUUID().
+        // getUser() is set during game initialisation and is available at every point
+        // in the game's lifecycle — title screen, mid-connection, in-world — without
+        // exception. This also removes the need for the mc.player == null guard, which
+        // was previously causing title screen connections to bypass the sequence entirely.
+        String playerUuid = minecraft.getUser().getGameProfile().getId().toString();
 
         // Check if the sequence is already complete for this player.
         // This is the re-trigger from FabricReconnectHandler — let it through

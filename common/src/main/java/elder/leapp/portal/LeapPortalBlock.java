@@ -92,12 +92,14 @@ public class LeapPortalBlock extends Block {
         // Re-entry guard
         if (activeTriggers.contains(playerId)) return;
 
-        // Check if this portal is linked
+        // Check if this portal is linked — use convenience method to avoid
+        // separate UUID lookup followed by address lookup.
+        String targetAddress = PortalRegistry.getLinkedAddressForPos(pos);
+        if (targetAddress == null || targetAddress.isEmpty()) return;
+
+        // Also get the portal UUID for the initiate packet.
         String portalUuid = PortalRegistry.getUuidForPos(pos);
         if (portalUuid == null) return;
-
-        String targetAddress = PortalRegistry.getLinkedAddress(portalUuid);
-        if (targetAddress == null || targetAddress.isEmpty()) return;
 
         // Check cooldown
         if (TransferOrchestrator.isOnCooldown(playerId.toString())) {

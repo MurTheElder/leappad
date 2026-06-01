@@ -219,6 +219,17 @@ public class PortalRegistry {
         return entry.linkedAddress.isEmpty() ? null : entry.linkedAddress;
     }
 
+    // Convenience method — combines getUuidForPos + getLinkedAddress into one call.
+    // Returns the linked address for the portal at the given block position,
+    // or null if the block is not a registered portal or the portal is unlinked.
+    public static String getLinkedAddressForPos(BlockPos pos) {
+        String uuid = reverseMap.get(pos);
+        if (uuid == null) return null;
+        PortalEntry entry = registry.get(uuid);
+        if (entry == null) return null;
+        return entry.linkedAddress.isEmpty() ? null : entry.linkedAddress;
+    }
+
     // -------------------------------------------------------
     // Reverse lookup — used by LeapPortalBlock.entityInside()
     // -------------------------------------------------------
