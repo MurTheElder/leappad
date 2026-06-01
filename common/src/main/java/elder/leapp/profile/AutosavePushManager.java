@@ -160,6 +160,23 @@ public class AutosavePushManager {
         }
     }
 
+    // SS9: Server-aware overload — cross-references the live player list before
+    // pushing to avoid touching ServerPlayer objects that are no longer connected.
+    // Called from LeapPadFabric SERVER_STOPPING where the server reference is available.
+    public static void onShutdown(net.minecraft.server.MinecraftServer server) {
+        if (buckets == null) return;
+        LeapPadCommon.LOGGER.info("[Leap! Pad] Shutdown — pushing dat for all connected players.");
+        java.util.Set<java.util.UUID> livePlayers = new java.util.HashSet<>();
+        server.getPlayerList().getPlayers().forEach(p -> livePlayers.add(p.getUUID()));
+        for (List<ServerPlayer> bucket : buckets) {
+            for (ServerPlayer player : new ArrayList<>(bucket)) {
+                if (livePlayers.contains(player.getUUID())) {
+                    pushPlayer(player);
+                }
+            }
+        }
+    }
+
     // -------------------------------------------------------
     // Internal push
     // -------------------------------------------------------
