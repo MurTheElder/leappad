@@ -159,6 +159,13 @@ public class TransferOrchestrator {
         void notifyHostReady(String playerUuid, TransferSession session);
     }
 
+    // SS8: Triggers an async re-fetch of the external IP when the cached value
+    // has expired. Implemented in FabricCommandRegistry (Fabric) and its NeoForge
+    // equivalent. Keeps common code free of loader-specific imports.
+    public interface IpRefreshCallback {
+        void refresh();
+    }
+
     // -------------------------------------------------------
     // Bridge interface storage and setters
     // -------------------------------------------------------
@@ -168,12 +175,14 @@ public class TransferOrchestrator {
     private static HostPrepNotifier      hostPrepNotifier;
     private static ServerLevelProvider   serverLevelProvider;
     private static PlayerNotifier        playerNotifier;
+    private static IpRefreshCallback     ipRefreshCallback;
 
     public static void setPacketSender(PacketSender s)                      { packetSender = s; }
     public static void setVanillaConnectTrigger(VanillaConnectTrigger t)    { vanillaConnectTrigger = t; }
     public static void setHostPrepNotifier(HostPrepNotifier n)              { hostPrepNotifier = n; }
     public static void setServerLevelProvider(ServerLevelProvider p)        { serverLevelProvider = p; }
     public static void setPlayerNotifier(PlayerNotifier n)                  { playerNotifier = n; }
+    public static void setIpRefreshCallback(IpRefreshCallback cb)           { ipRefreshCallback = cb; }
 
     // Package-private getters — used by TransferSequencer and TransferSessionManager
     static PacketSender          getPacketSender()         { return packetSender; }
@@ -181,4 +190,5 @@ public class TransferOrchestrator {
     static HostPrepNotifier      getHostPrepNotifier()     { return hostPrepNotifier; }
     static ServerLevelProvider   getServerLevelProvider()  { return serverLevelProvider; }
     static PlayerNotifier        getPlayerNotifier()       { return playerNotifier; }
+    static IpRefreshCallback     getIpRefreshCallback()    { return ipRefreshCallback; }
 }

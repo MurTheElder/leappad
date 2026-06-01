@@ -26,9 +26,12 @@ import java.util.concurrent.Executors;
 
 public class ProbeListener {
 
-    // Maps client IP → transfer key UUID for sessions currently in progress.
+    // Maps client IP → [transferKey, fetchTimestamp(ms)].
+    // SS5: Value changed from String to String[2] to track fetch time for expiry.
+    // Entries older than 40 seconds (sum of all timeout windows + 10s buffer)
+    // are swept on each probe arrival.
     // ConcurrentHashMap because probe handling runs on background threads.
-    private static final Map<String, String> pendingTransferKeys = new ConcurrentHashMap<>();
+    private static final Map<String, String[]> pendingTransferKeys = new ConcurrentHashMap<>();
 
     // Thread pool for handling probe connections — one thread per active probe.
     private static ExecutorService executor;
@@ -111,8 +114,16 @@ public class ProbeListener {
             // Generate a fresh transfer key for this session
             String transferKey = UUID.randomUUID().toString();
 
-            // Store it mapped to the client IP so TransferOrchestrator can validate it later
-            pendingTransferKeys.put(clientIp, transferKey);
+            // SS5: Sweep expired entries before adding the new one.
+            // 40 seconds = sum of all timeout windows (5+15+5+5) + 10s buffer.
+            long now = System.currentTimeMillis();
+            pendingTransferKeys.entrySet().removeIf(e ->
+                (now - Long.parseLong(e.getValue()[1])) > 40_000L
+            );
+
+            // Store key + timestamp mapped to client IP
+            pendingTransferKeys.put(clientIp, new String[]{transferKey,
+                String.valueOf(now)});
 
             // Send back: reachable=true, hasLeapPad=true, transferKey
             out.writeBoolean(true);  // reachable
@@ -144,8 +155,8 @@ public class ProbeListener {
     // matches what was sent to that client IP.
     // Returns true and removes the key if it matches; false otherwise.
     public static boolean validateAndConsumeKey(String clientIp, String transferKey) {
-        String stored = pendingTransferKeys.get(clientIp);
-        if (stored != null && stored.equals(transferKey)) {
+        String[] stored = pendingTransferKeys.get(clientIp);
+        if (stored != null && stored[0].equals(transferKey)) {
             pendingTransferKeys.remove(clientIp);
             return true;
         }
