@@ -157,11 +157,14 @@ public class LeapPadFabric implements ModInitializer {
         // autosave push never fires, and any portal registry changes made in the
         // session since the last disk write are lost.
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
-            AutosavePushManager.onShutdown();
+            // SS9: use server-aware shutdown to cross-reference live players
+            AutosavePushManager.onShutdown(server);
             ProbeListener.stop();
             // SS3+SS4 fix: clear cooldowns and shut down the timeout scheduler cleanly.
             TransferSessionManager.shutdown();
             if (worldSaveDir != null) {
+                // SS6: promote any unfinished provisional mirror portals before saving
+                PortalRegistry.promotePendingMirrorPortals();
                 PortalRegistry.save();
             }
             // Clear the LAN status HUD overlay on the client side
