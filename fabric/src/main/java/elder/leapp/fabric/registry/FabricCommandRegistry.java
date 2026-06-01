@@ -481,6 +481,19 @@ public class FabricCommandRegistry {
 
     // Fetches this machine's external IP from api.ipify.org.
     // Runs on a background thread — never call from the main thread.
+    // SS8: Public method to trigger an async external IP fetch and cache the result.
+    // Called by the IpRefreshCallback bridge injected into TransferOrchestrator from
+    // LeapPadFabricClient when TransferSequencer detects the cached IP has expired.
+    // Also called by the /leappad ip command handler (extracted from inline lambda).
+    public static void fetchAndCacheExternalIpAsync() {
+        CompletableFuture.runAsync(() -> {
+            String ip = fetchExternalIp();
+            if (ip != null && !ip.isEmpty()) {
+                elder.leapp.profile.ProfileManager.setCachedExternalIp(ip);
+            }
+        });
+    }
+
     private static String fetchExternalIp() {
         try {
             URL url = new URL("https://api.ipify.org");

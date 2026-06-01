@@ -10,7 +10,8 @@ package elder.leapp.fabric;
 //   - Inject bridge interfaces into TransferOrchestrator:
 //       PacketSender          — delegates outbound packets to FabricNetworking
 //       VanillaConnectTrigger — calls FabricReconnectHandler at sequence end
-//       PlayerNotifier        — shows messages and screens (stubs for ST1, ST2)
+//       PlayerNotifier        — shows messages and opens screens
+//       IpRefreshCallback     — triggers async external IP re-fetch when cache expires (SS8)
 //   - Inject PortalPacketSender into LeapPortalBlock
 //
 // Removed: GateReleaser, PortalConnectTrigger (replaced by VanillaConnectTrigger
@@ -18,6 +19,7 @@ package elder.leapp.fabric;
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.fabric.network.FabricNetworking;
+import elder.leapp.fabric.registry.FabricCommandRegistry;
 import elder.leapp.fabric.registry.FabricRegistrar;
 import elder.leapp.fabric.transfer.FabricReconnectHandler;
 import elder.leapp.fabric.ui.LanStatusHud;
@@ -39,6 +41,10 @@ public class LeapPadFabricClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+
+        // SS10: Clear any stale LAN HUD state from a previous session (e.g. after crash).
+        // Must run before any world loads.
+        LanStatusHud.clear();
 
         // S4: Resolve profilesDir and leapForwardPresent in Fabric-specific code
         // and pass them into ProfileManager.init() to keep common code loader-agnostic.
@@ -85,18 +91,24 @@ public class LeapPadFabricClient implements ClientModInitializer {
         // PlayerNotifier — shows messages and opens screens.
         TransferOrchestrator.setPlayerNotifier(new TransferOrchestrator.PlayerNotifier() {
             public void showPortalInactive(String playerUuid) {
+                // TH1: When UI is wired here, wrap mc.setScreen() in mc.execute() —
+                // this fires from a background thread.
                 // TODO ST: show "Portal is inactive." message to player
                 LeapPadCommon.LOGGER.info(
                     "[Leap! Pad] Portal inactive — stub notify for {}.", playerUuid
                 );
             }
             public void showNoLeapPad(String playerUuid, String targetAddress) {
+                // TH1: When WarningScreen is wired here, wrap mc.setScreen() in mc.execute() —
+                // this fires from a background thread.
                 // TODO ST1: open WarningScreen
                 LeapPadCommon.LOGGER.info(
                     "[Leap! Pad] No Leap! Pad on {} — warning screen stub.", targetAddress
                 );
             }
             public void showTimeout(String playerUuid) {
+                // TH1: When timeout UI is wired here, wrap mc.setScreen() in mc.execute() —
+                // this fires from the timeout scheduler thread.
                 // TODO ST: show "Connection timed out." message to player
                 LeapPadCommon.LOGGER.info(
                     "[Leap! Pad] Connection timed out — stub notify for {}.", playerUuid
@@ -118,6 +130,13 @@ public class LeapPadFabricClient implements ClientModInitializer {
                 FabricNetworking.sendReadyToServer(session.transferKey);
             }
         });
+
+        // SS8: Inject IP refresh callback so TransferSequencer can trigger a background
+        // re-fetch when the cached external IP has expired. Uses the bridge pattern to
+        // keep common code free of fabric-specific imports.
+        TransferOrchestrator.setIpRefreshCallback(
+            () -> FabricCommandRegistry.fetchAndCacheExternalIpAsync()
+        );
 
         // -------------------------------------------------------
         // Inject PortalPacketSender into LeapPortalBlock.

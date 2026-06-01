@@ -107,11 +107,12 @@ public class ProfileScreen extends Screen {
             this, profile.displayName, true,
             newName -> {
                 profile.displayName = newName;
-                // Re-save via ProfileManager — easiest way to trigger disk write
-                // is to re-create with same UUID and overwrite
+                // S1: Save the updated display name to disk.
+                ProfileManager.saveProfile(profile);
                 refreshList();
                 updateButtonStates();
-            }
+            },
+            ProfileManager.getAllProfiles() // S2: for duplicate name check
         ));
     }
 
@@ -137,17 +138,18 @@ public class ProfileScreen extends Screen {
         this.minecraft.setScreen(new ProfileNameInputScreen(
             this, "", false,
             name -> {
-                ProfileManager.createProfile(name);
+                // S2: capture return value and auto-select by UUID — not by name
+                CharacterProfile created = ProfileManager.createProfile(name);
                 refreshList();
-                // Auto-select the newly created profile
                 for (int i = 0; i < profileList.size(); i++) {
-                    if (profileList.get(i).displayName.equals(name)) {
+                    if (profileList.get(i).profileUuid.equals(created.profileUuid)) {
                         selectedIndex = i;
                         break;
                     }
                 }
                 updateButtonStates();
-            }
+            },
+            ProfileManager.getAllProfiles() // S2: for duplicate name check
         ));
     }
 

@@ -71,6 +71,10 @@ public class PortBindingCache {
 
     public static void unbindAllPorts() {
         boundPorts.clear();
+        // SS7: also clear offset sets to prevent desync between cache and ProbeListener.
+        // After a close, no ports should appear active in any capacity.
+        activeListenOffsets.clear();
+        activeOutboundOffsets.clear();
     }
 
     // -------------------------------------------------------

@@ -24,18 +24,24 @@ public class ProfileNameInputScreen extends Screen {
     private final String initialValue;
     private final Consumer<String> onConfirm;
     private final boolean isEdit;
+    // S2: Profile list for duplicate name detection. Null = no check performed.
+    private final java.util.List<elder.leapp.profile.CharacterProfile> existingProfiles;
 
     private EditBox nameField;
     private Button confirmButton;
 
     // isEdit=false → title "New Profile", isEdit=true → title "Edit Profile"
+    // existingProfiles: pass ProfileManager.getAllProfiles() to enable duplicate blocking.
+    // Pass null to skip duplicate checking (e.g. for contexts where it isn't needed).
     public ProfileNameInputScreen(Screen parent, String initialValue,
-                                   boolean isEdit, Consumer<String> onConfirm) {
+                                   boolean isEdit, Consumer<String> onConfirm,
+                                   java.util.List<elder.leapp.profile.CharacterProfile> existingProfiles) {
         super(Component.literal(isEdit ? "Edit Profile" : "New Profile"));
         this.parent = parent;
         this.initialValue = initialValue;
         this.isEdit = isEdit;
         this.onConfirm = onConfirm;
+        this.existingProfiles = existingProfiles;
     }
 
     @Override
@@ -53,10 +59,19 @@ public class ProfileNameInputScreen extends Screen {
         nameField.setMaxLength(32);
         nameField.setValue(initialValue);
         nameField.setHint(Component.literal("Profile name"));
-        // Enable confirm button only when field is non-blank
-        nameField.setResponder(text ->
-            confirmButton.active = !text.trim().isEmpty()
-        );
+        // S2: Disable confirm if blank or if name is already taken (case-insensitive).
+        // On edit, allow the same name as the current value (no false duplicate).
+        nameField.setResponder(text -> {
+            String trimmed = text.trim();
+            boolean blank = trimmed.isEmpty();
+            boolean duplicate = existingProfiles != null && existingProfiles.stream()
+                .anyMatch(p -> p.displayName.equalsIgnoreCase(trimmed)
+                               && !trimmed.equalsIgnoreCase(initialValue));
+            confirmButton.active = !blank && !duplicate;
+            nameField.setHint(duplicate
+                ? Component.literal("Name already in use")
+                : Component.literal("Profile name"));
+        });
         this.addRenderableWidget(nameField);
 
         // Confirm button
@@ -64,7 +79,9 @@ public class ProfileNameInputScreen extends Screen {
             Component.literal(isEdit ? "Save" : "Create"),
             button -> confirm()
         ).bounds(centerX - 102, centerY + 10, 100, 20).build();
-        confirmButton.active = !initialValue.trim().isEmpty();
+        confirmButton.active = !initialValue.trim().isEmpty() &&
+            (existingProfiles == null || existingProfiles.stream()
+                .noneMatch(p -> p.displayName.equalsIgnoreCase(initialValue.trim())));
         this.addRenderableWidget(confirmButton);
 
         // Cancel button

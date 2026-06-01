@@ -66,7 +66,15 @@ public class TransferSequencer {
             }
 
             String clientIp = ProfileManager.getCachedExternalIp();
-            if (clientIp == null || clientIp.isEmpty()) clientIp = "unknown";
+            if (clientIp == null || clientIp.isEmpty()) {
+                // SS8: Cache is empty or expired — trigger async re-fetch for next attempt.
+                // Uses IpRefreshCallback bridge (injected from LeapPadFabricClient) to keep
+                // common code free of fabric-specific imports — required for NeoForge portability.
+                // Use "unknown" for this probe; the refreshed IP will be ready on retry.
+                TransferOrchestrator.IpRefreshCallback cb = TransferOrchestrator.getIpRefreshCallback();
+                if (cb != null) cb.refresh();
+                clientIp = "unknown";
+            }
 
             WorldPinger.PingOutcome outcome = WorldPinger.probe(host, port, clientIp, leapForward);
 

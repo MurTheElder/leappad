@@ -50,6 +50,10 @@ public class ProfileManager {
     // by TransferOrchestrator when building probe packets.
     private static String cachedExternalIp = "";
 
+    // SS8: Timestamp of the last successful IP fetch. Used to expire the cache
+    // after 30 minutes so a changed external IP (VPN, ISP reassignment) is detected.
+    private static long cachedExternalIpFetchTime = 0L;
+
     // -------------------------------------------------------
     // Lifecycle
     // -------------------------------------------------------
@@ -119,6 +123,12 @@ public class ProfileManager {
     // Returns the profile for the given UUID, or null if not found
     public static CharacterProfile getProfile(String profileUuid) {
         return profiles.get(profileUuid);
+    }
+
+    // S1: Public wrapper so ProfileScreen can persist display name edits.
+    // saveToDisk() is private — this is the only external save path.
+    public static void saveProfile(CharacterProfile profile) {
+        saveToDisk(profile);
     }
 
     // -------------------------------------------------------
@@ -207,11 +217,17 @@ public class ProfileManager {
     // -------------------------------------------------------
 
     public static String getCachedExternalIp() {
+        // SS8: Return empty string if cache is older than 30 minutes so the
+        // caller treats it as uncached and triggers a fresh fetch.
+        if (System.currentTimeMillis() - cachedExternalIpFetchTime > 30 * 60 * 1000L) {
+            return "";
+        }
         return cachedExternalIp;
     }
 
     public static void setCachedExternalIp(String ip) {
         cachedExternalIp = ip;
+        cachedExternalIpFetchTime = System.currentTimeMillis(); // SS8: record fetch time
     }
 
     // -------------------------------------------------------
