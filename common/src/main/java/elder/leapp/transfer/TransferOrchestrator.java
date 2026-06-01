@@ -129,6 +129,29 @@ public class TransferOrchestrator {
         discardSession(playerUuid, session);
     }
 
+    // Called by ProfileSelectorScreen / PortalProfileSelectorScreen when the
+    // player has made their selection (or chosen no profile). Resumes the sequence
+    // from AWAITING_PROFILE by proceeding to send the dat blob.
+    public static void onProfileSelected(String playerUuid) {
+        TransferSession session = activeSessions.get(playerUuid);
+        if (session == null) return;
+        session.advanceTo(TransferSession.TransferState.SENDING_DAT);
+        Thread t = new Thread(
+            () -> sendProfileDat(playerUuid, session),
+            "LeapPad-DatSend"
+        );
+        t.setDaemon(true);
+        t.start();
+    }
+
+    // Called by ProfileSelectorScreen / PortalProfileSelectorScreen when the
+    // player cancels. Discards the session and clears the portal trigger if needed.
+    public static void cancelFromProfileSelector(String playerUuid) {
+        TransferSession session = activeSessions.get(playerUuid);
+        LeapPadCommon.LOGGER.info("[Leap! Pad] Profile selection cancelled for {}.", playerUuid);
+        discardSession(playerUuid, session);
+    }
+
     // -------------------------------------------------------
     // Step 3 — probe
     // -------------------------------------------------------
@@ -539,7 +562,8 @@ public class TransferOrchestrator {
         void showPortalInactive(String playerUuid);
         void showNoLeapPad(String playerUuid, String targetAddress);
         void showTimeout(String playerUuid);
-        void openProfileSelector(String playerUuid);
+        // isPortalPath tells the UI layer which selector screen to open
+        void openProfileSelector(String playerUuid, boolean isPortalPath, String targetAddress);
         void notifyHostReady(String playerUuid, TransferSession session);
     }
 
@@ -565,7 +589,10 @@ public class TransferOrchestrator {
         if (playerNotifier != null) playerNotifier.showTimeout(playerUuid);
     }
     private static void openProfileSelector(String playerUuid) {
-        if (playerNotifier != null) playerNotifier.openProfileSelector(playerUuid);
+        TransferSession session = activeSessions.get(playerUuid);
+        boolean isPortalPath = session != null && session.isPortalPath;
+        String targetAddress = session != null ? session.targetAddress : "";
+        if (playerNotifier != null) playerNotifier.openProfileSelector(playerUuid, isPortalPath, targetAddress);
     }
     private static void notifyHostReady(String playerUuid, TransferSession session) {
         if (playerNotifier != null) playerNotifier.notifyHostReady(playerUuid, session);

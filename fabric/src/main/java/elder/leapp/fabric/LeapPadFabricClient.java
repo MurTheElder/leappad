@@ -20,6 +20,9 @@ import elder.leapp.LeapPadCommon;
 import elder.leapp.fabric.network.FabricNetworking;
 import elder.leapp.fabric.registry.FabricRegistrar;
 import elder.leapp.fabric.transfer.FabricReconnectHandler;
+import elder.leapp.fabric.ui.LanStatusHud;
+import elder.leapp.fabric.ui.PortalProfileSelectorScreen;
+import elder.leapp.fabric.ui.ProfileSelectorScreen;
 import elder.leapp.portal.LeapPortalBlock;
 import elder.leapp.profile.ProfileManager;
 import elder.leapp.transfer.TransferOrchestrator;
@@ -99,11 +102,15 @@ public class LeapPadFabricClient implements ClientModInitializer {
                     "[Leap! Pad] Connection timed out — stub notify for {}.", playerUuid
                 );
             }
-            public void openProfileSelector(String playerUuid) {
-                // TODO ST2: open ProfileSelectorScreen
-                LeapPadCommon.LOGGER.info(
-                    "[Leap! Pad] Profile selector stub for {}.", playerUuid
-                );
+            public void openProfileSelector(String playerUuid, boolean isPortalPath, String targetAddress) {
+                net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+                mc.execute(() -> {
+                    if (isPortalPath) {
+                        mc.setScreen(new PortalProfileSelectorScreen(mc.screen, playerUuid, targetAddress));
+                    } else {
+                        mc.setScreen(new ProfileSelectorScreen(mc.screen, playerUuid, targetAddress));
+                    }
+                });
             }
             public void notifyHostReady(String playerUuid, TransferSession session) {
                 // All client pre-connection work is complete — send READY.
@@ -118,6 +125,11 @@ public class LeapPadFabricClient implements ClientModInitializer {
         // so the client can start the sequence before any vanilla connect fires.
         // -------------------------------------------------------
         LeapPortalBlock.setPortalPacketSender(FabricNetworking.PORTAL_PACKET_SENDER);
+
+        // Register the LAN status HUD overlay.
+        // Renders "[Leap! Pad] Open on port XXXXX" in the top-left corner for OP players.
+        // Active only when LAN auto-open has fired. Hides on F3.
+        LanStatusHud.register();
 
         LeapPadCommon.LOGGER.info("Leap! Pad (Fabric client) ready.");
     }

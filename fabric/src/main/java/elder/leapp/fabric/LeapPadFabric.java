@@ -11,14 +11,17 @@ package elder.leapp.fabric;
 //   - Register server-side packet receivers (C1)
 //   - Inject the AutosavePushManager.DatPusher bridge (C4)
 //   - On world start: load config, init port cache, start ProbeListener,
-//     load portal registry, inject HostPrepNotifier, init autosave buckets (C6, C7)
-//   - On world stop: push final dat, stop ProbeListener, save portal registry (N3)
+//     load portal registry, LAN auto-open if configured, inject HostPrepNotifier,
+//     init autosave buckets (C6, C7, F2)
+//   - On world stop: push final dat, stop ProbeListener, save portal registry,
+//     clear LAN status HUD (N3, F2)
 //   - Hook server tick to fire AutosavePushManager.onAutosave() every 6000 ticks
 //   - Register the ServerPlayConnectionEvents.JOIN listener for bucket assignment
 //   - Register the ServerPlayConnectionEvents.DISCONNECT listener for dat push on leave
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.config.LeapPadConfig;
+import elder.leapp.config.WorldLanConfig;
 import elder.leapp.fabric.network.FabricNetworking;
 import elder.leapp.fabric.registry.FabricCommandRegistry;
 import elder.leapp.portal.PortalRegistry;
@@ -87,6 +90,31 @@ public class LeapPadFabric implements ModInitializer {
             worldSaveDir = server.getWorldPath(LevelResource.ROOT).toAbsolutePath();
             PortalRegistry.load(worldSaveDir);
 
+            // F2: LAN auto-open. Read the per-world LAN config and if configured,
+            // dispatch /publish [port] to open the world to LAN automatically,
+            // then bind the Leap! Pad probe listener on that port.
+            WorldLanConfig lanConfig = WorldLanConfig.load(worldSaveDir);
+            if (lanConfig.isConfigured()) {
+                int lanPort = lanConfig.lanPort;
+                try {
+                    server.getCommands().getDispatcher().execute(
+                        "publish " + lanPort,
+                        server.createCommandSourceStack()
+                    );
+                    PortBindingCache.bindPort(lanPort);
+                    LeapPadCommon.LOGGER.info(
+                        "[Leap! Pad] World auto-opened to LAN on port {}.", lanPort
+                    );
+                    // Broadcast chat notification to all OP players
+                    // and activate the client-side HUD overlay.
+                    FabricNetworking.broadcastLanOpenToOps(server, lanPort);
+                } catch (Exception e) {
+                    LeapPadCommon.LOGGER.error(
+                        "[Leap! Pad] LAN auto-open failed for port {}: {}", lanPort, e.getMessage()
+                    );
+                }
+            }
+
             // N4: Inject ServerLevelProvider so TransferOrchestrator.onHostPrepComplete()
             // can pass a ServerLevel to MirrorPortalManager when building the mirror portal.
             TransferOrchestrator.setServerLevelProvider(consumer ->
@@ -128,6 +156,11 @@ public class LeapPadFabric implements ModInitializer {
             ProbeListener.stop();
             if (worldSaveDir != null) {
                 PortalRegistry.save();
+            }
+            // Clear the LAN status HUD overlay on the client side
+            net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+            if (mc != null) {
+                mc.execute(() -> elder.leapp.fabric.ui.LanStatusHud.clear());
             }
             LeapPadCommon.LOGGER.info("[Leap! Pad] World stopping — shutdown complete.");
         });

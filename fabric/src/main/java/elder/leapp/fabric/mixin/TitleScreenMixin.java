@@ -14,6 +14,7 @@ package elder.leapp.fabric.mixin;
 //      the profile selector closes, so the selection isn't wiped before it can be used.
 //      The suppression flag lives locally in this Mixin — nothing else touches it.
 
+import elder.leapp.fabric.ui.ProfileScreen;
 import elder.leapp.profile.ProfileManager;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.TitleScreen;
@@ -43,8 +44,8 @@ public abstract class TitleScreenMixin extends Screen {
     // the vanilla Singleplayer / Multiplayer buttons.
     @Inject(method = "init", at = @At("TAIL"))
     private void leappad_addProfilesButton(CallbackInfo ci) {
-        // Position the button below the standard button row.
-        // X: centred on screen. Y: 132 puts it just below the multiplayer button area.
+        // Bottom-left placement: 8px from left edge, 52px from bottom.
+        // Sits below the standard auxiliary mod button row (height - 28) with 4px clearance.
         // Width 200, height 20 — standard Minecraft button dimensions.
         this.addRenderableWidget(Button.builder(
             Component.literal("Character Profiles"),
@@ -56,7 +57,7 @@ public abstract class TitleScreenMixin extends Screen {
                 // (ProfileScreen is implemented in the profile UI layer — wired in a later step)
                 openProfileManager();
             })
-            .bounds(this.width / 2 - 100, 132, 200, 20)
+            .bounds(8, this.height - 52, 200, 20)
             .build()
         );
     }
@@ -79,9 +80,7 @@ public abstract class TitleScreenMixin extends Screen {
     // The title screen stays underneath — it does not re-render.
     @Unique
     private void openProfileManager() {
-        // ProfileScreen is wired in the UI build step.
-        // For now, log the action so we know the button fires correctly.
         elder.leapp.LeapPadCommon.LOGGER.info("[Leap! Pad] Character Profiles button clicked.");
-        // minecraft.setScreen(new ProfileScreen(this)); — added when ProfileScreen is built
+        this.minecraft.setScreen(new ProfileScreen((Screen)(Object)this));
     }
 }
