@@ -25,14 +25,21 @@ import elder.leapp.fabric.transfer.FabricReconnectHandler;
 import elder.leapp.fabric.ui.LanStatusHud;
 import elder.leapp.fabric.ui.PortalProfileSelectorScreen;
 import elder.leapp.fabric.ui.ProfileSelectorScreen;
+import elder.leapp.fabric.ui.WarningScreen;
 import elder.leapp.portal.LeapPortalBlock;
+import elder.leapp.portal.PortalRegistry;
 import elder.leapp.profile.ProfileManager;
 import elder.leapp.transfer.TransferOrchestrator;
 import elder.leapp.transfer.TransferSession;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.Minecraft;
+import net.minecraft.core.BlockPos;
+import net.minecraft.phys.BlockHitResult;
+import net.minecraft.phys.HitResult;
 
 import java.nio.file.Path;
 
@@ -91,28 +98,43 @@ public class LeapPadFabricClient implements ClientModInitializer {
         // PlayerNotifier — shows messages and opens screens.
         TransferOrchestrator.setPlayerNotifier(new TransferOrchestrator.PlayerNotifier() {
             public void showPortalInactive(String playerUuid) {
-                // TH1: When UI is wired here, wrap mc.setScreen() in mc.execute() —
-                // this fires from a background thread.
-                // TODO ST: show "Portal is inactive." message to player
-                LeapPadCommon.LOGGER.info(
-                    "[Leap! Pad] Portal inactive — stub notify for {}.", playerUuid
-                );
+                // Only fires on the portal path — direct connects get vanilla's own error.
+                // Wrapped in mc.execute() because this fires from the LeapPad-Probe background thread.
+                Minecraft mc = Minecraft.getInstance();
+                mc.execute(() -> {
+                    if (mc.player != null) {
+                        mc.player.sendSystemMessage(
+                            net.minecraft.network.chat.Component.literal("[Leap! Pad] Portal is inactive.")
+                        );
+                    }
+                });
             }
             public void showNoLeapPad(String playerUuid, String targetAddress) {
-                // TH1: When WarningScreen is wired here, wrap mc.setScreen() in mc.execute() —
-                // this fires from a background thread.
-                // TODO ST1: open WarningScreen
-                LeapPadCommon.LOGGER.info(
-                    "[Leap! Pad] No Leap! Pad on {} — warning screen stub.", targetAddress
-                );
+                // Look up the origin portal UUID to find the portal's nickname.
+                // Falls back to the raw address if no UUID or nickname is available.
+                // Wrapped in mc.execute() because this fires from the LeapPad-Probe background thread.
+                String originUuid = TransferOrchestrator.getOriginPortalUuid(playerUuid);
+                String displayLabel = targetAddress;
+                if (originUuid != null) {
+                    PortalRegistry.PortalEntry entry = PortalRegistry.getEntry(originUuid);
+                    if (entry != null && entry.nickname != null && !entry.nickname.isEmpty()) {
+                        displayLabel = entry.nickname;
+                    }
+                }
+                final String label = displayLabel;
+                Minecraft mc = Minecraft.getInstance();
+                mc.execute(() -> mc.setScreen(new WarningScreen(mc.screen, playerUuid, label)));
             }
             public void showTimeout(String playerUuid) {
-                // TH1: When timeout UI is wired here, wrap mc.setScreen() in mc.execute() —
-                // this fires from the timeout scheduler thread.
-                // TODO ST: show "Connection timed out." message to player
-                LeapPadCommon.LOGGER.info(
-                    "[Leap! Pad] Connection timed out — stub notify for {}.", playerUuid
-                );
+                // Fires from the timeout scheduler thread — must be marshalled to the render thread.
+                Minecraft mc = Minecraft.getInstance();
+                mc.execute(() -> {
+                    if (mc.player != null) {
+                        mc.player.sendSystemMessage(
+                            net.minecraft.network.chat.Component.literal("[Leap! Pad] Connection timed out.")
+                        );
+                    }
+                });
             }
             public void openProfileSelector(String playerUuid, boolean isPortalPath, String targetAddress) {
                 net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
@@ -149,6 +171,42 @@ public class LeapPadFabricClient implements ClientModInitializer {
         // Renders "[Leap! Pad] Open on port XXXXX" in the top-left corner for OP players.
         // Active only when LAN auto-open has fired. Hides on F3.
         LanStatusHud.register();
+
+        // /portalid get auto-fill — intercepts the command string client-side before
+        // it reaches the server. When the player submits "/portalid get" with no args,
+        // the looked-at block's coordinates are appended automatically.
+        // If the command already has coordinates, it passes through unchanged.
+        // If no block is being looked at, the command is cancelled with a hint message.
+        ClientSendMessageEvents.ALLOW_COMMAND.register(command -> {
+            if (!command.equals("portalid get")) {
+                // Has args already (e.g. "portalid get 100 64 -200") — pass through
+                if (command.startsWith("portalid get ")) return true;
+                // Not our command at all
+                return true;
+            }
+            // No args — try to fill in the looked-at block
+            Minecraft mc = Minecraft.getInstance();
+            HitResult hit = mc.hitResult;
+            if (hit instanceof BlockHitResult blockHit) {
+                BlockPos pos = blockHit.getBlockPos();
+                // Re-send with coordinates appended — return false to cancel the original,
+                // then dispatch the rewritten command
+                mc.getConnection().sendCommand(
+                    "portalid get " + pos.getX() + " " + pos.getY() + " " + pos.getZ()
+                );
+                return false; // Cancel the bare /portalid get
+            } else {
+                // Not looking at a block — cancel and tell the player
+                if (mc.player != null) {
+                    mc.player.sendSystemMessage(
+                        net.minecraft.network.chat.Component.literal(
+                            "[Leap! Pad] Look at a portal block first, or provide coordinates."
+                        )
+                    );
+                }
+                return false;
+            }
+        });
 
         LeapPadCommon.LOGGER.info("Leap! Pad (Fabric client) ready.");
     }
