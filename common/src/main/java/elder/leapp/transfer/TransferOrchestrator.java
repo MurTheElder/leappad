@@ -94,6 +94,39 @@ public class TransferOrchestrator {
         TransferSessionManager.discardSession(playerUuid, session);
     }
 
+    // Returns the origin portal UUID for the player's current session, or null
+    // if there is no active session or the session has no portal UUID (direct connect).
+    // Used by LeapPadFabricClient to look up the portal nickname for the warning screen.
+    public static String getOriginPortalUuid(String playerUuid) {
+        TransferSession session = TransferSessionManager.getSession(playerUuid);
+        return session == null ? null : session.originPortalUuid;
+    }
+
+    // Called by WarningScreen when the player confirms they want to proceed to
+    // a world that has no Leap! Pad installed. Advances the AWAITING_GATE session
+    // and triggers a vanilla join with no profile dat sent.
+    public static void onNoLeapPadConfirmed(String playerUuid) {
+        TransferSession session = TransferSessionManager.getSession(playerUuid);
+        if (session == null) return;
+        session.advanceTo(TransferSession.TransferState.COMPLETE);
+        VanillaConnectTrigger trigger = vanillaConnectTrigger;
+        if (trigger != null) {
+            trigger.connect(playerUuid, session.targetAddress);
+        } else {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] VanillaConnectTrigger not injected — cannot connect player {} " +
+                "after no-LeapPad confirmation.", playerUuid
+            );
+        }
+    }
+
+    // Called by WarningScreen when the player cancels the no-Leap!-Pad warning.
+    public static void cancelFromWarningScreen(String playerUuid) {
+        TransferSession session = TransferSessionManager.getSession(playerUuid);
+        LeapPadCommon.LOGGER.info("[Leap! Pad] Warning screen cancelled for {}.", playerUuid);
+        TransferSessionManager.discardSession(playerUuid, session);
+    }
+
     // -------------------------------------------------------
     // Session state queries — used by ConnectScreenMixin
     // -------------------------------------------------------
