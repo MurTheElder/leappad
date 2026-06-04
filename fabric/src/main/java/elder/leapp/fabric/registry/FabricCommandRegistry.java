@@ -16,15 +16,27 @@ package elder.leapp.fabric.registry;
 // development builds produced by GitHub Actions.
 
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import elder.leapp.LeapPadCommon;
+import elder.leapp.config.LeapPadConfig;
+import elder.leapp.config.WorldLanConfig;
 import elder.leapp.portal.PortalRegistry;
 import elder.leapp.probe.PortBindingCache;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
+import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.Level;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -276,16 +288,33 @@ public class FabricCommandRegistry {
 
         dispatcher.register(Commands.literal("portalid")
 
-            // /portalid get — returns active UUID of targeted portal block(s)
+            // /portalid get <x> <y> <z>
+            // Returns the active UUID of the portal interior block at the given coordinates.
+            // Client-side: when typed as /portalid get with no args, LeapPadFabricClient
+            // intercepts the command and appends the looked-at block's coordinates before
+            // sending it to the server. Manual coordinate entry also works directly.
             .then(Commands.literal("get")
                 .requires(src -> src.hasPermission(2))
-                .executes(ctx -> {
-                    // TODO ST5: wire crosshair block hit result when available
-                    ctx.getSource().sendSuccess(
-                        () -> Component.literal("[Leap! Pad] Target a portal block to get its UUID."), false
-                    );
-                    return 1;
-                })
+                .then(Commands.argument("pos", BlockPosArgument.blockPos())
+                    .executes(ctx -> {
+                        BlockPos pos = BlockPosArgument.getLoadedBlockPos(ctx, "pos");
+                        String uuid = PortalRegistry.getUuidForPos(pos);
+                        if (uuid == null) {
+                            ctx.getSource().sendFailure(
+                                Component.literal("[Leap! Pad] No portal registered at (" +
+                                    pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ").")
+                            );
+                            return 0;
+                        }
+                        ctx.getSource().sendSuccess(
+                            () -> Component.literal("[Leap! Pad] Portal at (" +
+                                pos.getX() + ", " + pos.getY() + ", " + pos.getZ() +
+                                "): UUID " + uuid),
+                            false
+                        );
+                        return 1;
+                    })
+                )
             )
 
             // /portalid set {UUID}
@@ -374,16 +403,47 @@ public class FabricCommandRegistry {
                 )
             )
 
-            // /portalid registry — gives player a written book listing all portals
+            // /portalid registry
+            // Gives the player a written book listing all registered portals.
+            // By default shows UUID and nickname (or address if no nickname, or "(unlinked)").
+            //
+            // /portalid registry showip OP=N
+            // Two-gate check: player's actual OP level must be >= N, and N must be >=
+            // the configured ipVisibilityMinOpLevel (world config overrides global config).
+            // If both gates pass: book entries include the full address alongside nickname.
+            // If either gate fails: rejection message sent to the player and to all online
+            // players at or above the configured threshold. No book given on failure.
             .then(Commands.literal("registry")
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
-                    // TODO ST6: implement registry book generation
-                    ctx.getSource().sendSuccess(
-                        () -> Component.literal("[Leap! Pad] Registry book — coming in next build step."), false
-                    );
+                    ServerPlayer player = ctx.getSource().getPlayerOrException();
+                    giveRegistryBook(player, false);
                     return 1;
                 })
+                // /portalid registry showip OP=N
+                .then(Commands.literal("showip")
+                    .requires(src -> src.hasPermission(2))
+                    .then(Commands.argument("op_level", IntegerArgumentType.integer(1, 4))
+                        .executes(ctx -> {
+                            int declaredLevel = IntegerArgumentType.getInteger(ctx, "op_level");
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                            int threshold = resolveIpVisibilityThreshold(ctx.getSource());
+
+                            // Gate 1: player's actual level must be >= declared level
+                            boolean gate1 = player.hasPermissions(declaredLevel);
+                            // Gate 2: declared level must be >= configured threshold
+                            boolean gate2 = declaredLevel >= threshold;
+
+                            if (!gate1 || !gate2) {
+                                notifyShowipRejection(player, declaredLevel, threshold, ctx.getSource());
+                                return 0;
+                            }
+
+                            giveRegistryBook(player, true);
+                            return 1;
+                        })
+                    )
+                )
             )
 
             // /portalid nickname {UUID} "string"
@@ -424,6 +484,144 @@ public class FabricCommandRegistry {
                 )
             )
         );
+    }
+
+    // -------------------------------------------------------
+    // Registry book generation
+    // -------------------------------------------------------
+
+    // Maximum characters per book page (vanilla limit is 256 per page).
+    private static final int MAX_PAGE_CHARS = 240;
+
+    // Builds and gives a registry book to the player.
+    // showIp = false: shows UUID and nickname (or address if no nickname, or "(unlinked)")
+    // showIp = true:  shows UUID, address, and nickname together where both are set
+    private static void giveRegistryBook(ServerPlayer player, boolean showIp) {
+        java.util.Map<String, PortalRegistry.PortalEntry> all = PortalRegistry.getAll();
+
+        // Build all entry lines first, then pack into pages
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, PortalRegistry.PortalEntry> e : all.entrySet()) {
+            String uuid  = e.getKey();
+            PortalRegistry.PortalEntry entry = e.getValue();
+            boolean hasAddress  = entry.linkedAddress != null && !entry.linkedAddress.isEmpty();
+            boolean hasNickname = entry.nickname != null && !entry.nickname.isEmpty();
+
+            String line;
+            if (showIp) {
+                // IP-visible format: uuid — address (nickname) or subsets
+                if (hasAddress && hasNickname) {
+                    line = uuid + " \u2014 " + entry.linkedAddress + " (" + entry.nickname + ")";
+                } else if (hasAddress) {
+                    line = uuid + " \u2014 " + entry.linkedAddress;
+                } else if (hasNickname) {
+                    line = uuid + " \u2014 (" + entry.nickname + ")";
+                } else {
+                    line = uuid + " \u2014 (unlinked)";
+                }
+            } else {
+                // Standard format: uuid — nickname, or address if no nickname, or (unlinked)
+                if (hasNickname) {
+                    line = uuid + " \u2014 " + entry.nickname;
+                } else if (hasAddress) {
+                    line = uuid + " \u2014 " + entry.linkedAddress;
+                } else {
+                    line = uuid + " \u2014 (unlinked)";
+                }
+            }
+            lines.add(line);
+        }
+
+        // Pack lines into pages
+        java.util.List<String> pages = new java.util.ArrayList<>();
+        StringBuilder page = new StringBuilder();
+        for (String line : lines) {
+            // Each line gets a newline appended; check if it fits on the current page
+            String lineWithNewline = line + "\n";
+            if (page.length() + lineWithNewline.length() > MAX_PAGE_CHARS && page.length() > 0) {
+                pages.add(page.toString().trim());
+                page = new StringBuilder();
+            }
+            page.append(lineWithNewline);
+        }
+        if (page.length() > 0) pages.add(page.toString().trim());
+        if (pages.isEmpty()) pages.add("No portals registered.");
+
+        // Build the written_book ItemStack via NBT
+        ItemStack book = new ItemStack(Items.WRITTEN_BOOK);
+        CompoundTag tag = new CompoundTag();
+        tag.putString("title", "Portal Registry");
+        tag.putString("author", "Leap! Pad");
+        tag.putByte("resolved", (byte) 1);
+
+        ListTag pageList = new ListTag();
+        for (String pageContent : pages) {
+            // Each page is stored as a JSON text component string
+            pageList.add(StringTag.valueOf("{\"text\":\"" +
+                pageContent.replace("\\", "\\\\")
+                           .replace("\"", "\\\"")
+                           .replace("\n", "\\n") +
+                "\"}"));
+        }
+        tag.put("pages", pageList);
+        book.setTag(tag);
+
+        // Give to player; drop at feet if inventory is full
+        if (!player.getInventory().add(book)) {
+            player.drop(book, false);
+        }
+
+        final int pageCount = pages.size();
+        player.sendSystemMessage(Component.literal(
+            "[Leap! Pad] Registry book given (" + pageCount + " page" +
+            (pageCount == 1 ? "" : "s") + ")."
+        ));
+    }
+
+    // Reads the effective IP visibility threshold for the current world.
+    // World config (leappad_lan.json) overrides the global config (leappad.json)
+    // when an explicit value is present.
+    private static int resolveIpVisibilityThreshold(CommandSourceStack source) {
+        try {
+            // Resolve the world save directory from the server's level storage
+            java.nio.file.Path worldDir = source.getServer()
+                .getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
+                .toAbsolutePath();
+            WorldLanConfig worldConfig = WorldLanConfig.load(worldDir);
+            if (worldConfig.hasIpVisibilityOverride()) {
+                return worldConfig.getIpVisibilityMinOpLevel();
+            }
+        } catch (Exception e) {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] Could not read world config for IP visibility threshold: {}", e.getMessage()
+            );
+        }
+        return LeapPadConfig.ipVisibilityMinOpLevel;
+    }
+
+    // Sends rejection messages when /portalid registry showip OP=N fails either gate.
+    // The attempting player gets a direct message. All online players at or above
+    // the configured threshold see a notification including the player name and
+    // declared level — so they know someone below the threshold attempted access.
+    private static void notifyShowipRejection(ServerPlayer player, int declaredLevel,
+                                              int threshold, CommandSourceStack source) {
+        player.sendSystemMessage(Component.literal(
+            "[Leap! Pad] You do not have permission to view portal addresses."
+        ));
+        String playerName = player.getName().getString();
+        String notification = "[Leap! Pad] " + playerName +
+            " attempted to access portal address visibility (OP=" + declaredLevel + " declared).";
+        source.getServer().execute(() ->
+            source.getServer().getPlayerList().getPlayers().forEach(p -> {
+                // Notify everyone at or above the threshold except the attempting player
+                // (they already got their own message above)
+                if (p.hasPermissions(threshold) && !p.getUUID().equals(player.getUUID())) {
+                    p.sendSystemMessage(Component.literal(notification));
+                }
+            })
+        );
+        LeapPadCommon.LOGGER.warn("[Leap! Pad] showip rejection: {} declared OP={}, threshold={}",
+            playerName, declaredLevel, threshold);
     }
 
     // -------------------------------------------------------
