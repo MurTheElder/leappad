@@ -37,5 +37,6 @@
   ],
   "playerDatPushTime": 1,
   "playerDatCyclic": 1,
-  "portalDesignationActiveLength": 5
+  "portalDesignationActiveLength": 5,
+  "ipVisibilityMinOpLevel": 3
 }
