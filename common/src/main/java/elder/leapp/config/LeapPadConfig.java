@@ -52,6 +52,11 @@ public class LeapPadConfig {
     // Number of characters used as the active UUID for portal identification.
     public static int portalDesignationActiveLength;
 
+    // Minimum OP level required to use /portalid registry showip OP=N.
+    // Must be 1–4. Default: 3 (server management level).
+    // Can be overridden per-world via leappad_lan.json.
+    public static int ipVisibilityMinOpLevel;
+
     // -------------------------------------------------------
     // Internals
     // -------------------------------------------------------
@@ -113,6 +118,7 @@ public class LeapPadConfig {
         playerDatPushTime         = requirePositiveInt(json, "playerDatPushTime");
         playerDatCyclic           = requirePositiveInt(json, "playerDatCyclic");
         portalDesignationActiveLength = requirePositiveInt(json, "portalDesignationActiveLength");
+        ipVisibilityMinOpLevel        = requireIntInRange(json, "ipVisibilityMinOpLevel", 1, 4);
 
         // playerDatPushTime must be a multiple of playerDatCyclic
         if (playerDatPushTime % playerDatCyclic != 0) {
@@ -179,6 +185,28 @@ public class LeapPadConfig {
             result[i++] = v;
         }
         return result;
+    }
+
+    private static int requireIntInRange(JsonObject json, String key, int min, int max) {
+        if (!json.has(key)) {
+            throw new IllegalStateException(
+                "[Leap! Pad] Config error: missing required key '" + key + "'."
+            );
+        }
+        JsonElement el = json.get(key);
+        if (!el.isJsonPrimitive() || !el.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalStateException(
+                "[Leap! Pad] Config error: '" + key + "' must be an integer, got: " + el
+            );
+        }
+        int value = el.getAsInt();
+        if (value < min || value > max) {
+            throw new IllegalStateException(
+                "[Leap! Pad] Config error: '" + key + "' must be between " + min +
+                " and " + max + " (inclusive), got: " + value
+            );
+        }
+        return value;
     }
 
     private static String[] requireNonEmptyStringArray(JsonObject json, String key) {
