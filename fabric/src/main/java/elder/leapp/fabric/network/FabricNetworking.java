@@ -54,12 +54,21 @@ public class FabricNetworking {
             (client, handler, buf, responseSender) -> {
                 LeapPadPackets.WarningScreenPacket pkt =
                     LeapPadPackets.WarningScreenPacket.decode(buf);
+                String playerUuid = client.getUser().getGameProfile().getId().toString();
                 client.execute(() -> {
-                    LeapPadCommon.LOGGER.info(
-                        "[Leap! Pad] Warning screen: target has no Leap! Pad — {}",
-                        pkt.targetAddress
-                    );
-                    // TODO ST1: open WarningScreen
+                    // Resolve nickname via the active session's origin portal UUID,
+                    // falling back to the raw address from the packet if unavailable.
+                    String originUuid = elder.leapp.transfer.TransferOrchestrator.getOriginPortalUuid(playerUuid);
+                    String displayLabel = pkt.targetAddress;
+                    if (originUuid != null) {
+                        elder.leapp.portal.PortalRegistry.PortalEntry entry =
+                            elder.leapp.portal.PortalRegistry.getEntry(originUuid);
+                        if (entry != null && entry.nickname != null && !entry.nickname.isEmpty()) {
+                            displayLabel = entry.nickname;
+                        }
+                    }
+                    final String label = displayLabel;
+                    client.setScreen(new elder.leapp.fabric.ui.WarningScreen(client.screen, playerUuid, label));
                 });
             }
         );

@@ -30,6 +30,23 @@ public class WorldLanConfig {
     // 0 = unset (disabled), -1 = explicitly closed (disabled), >0 = enabled.
     public int lanPort = 0;
 
+    // Optional override for the minimum OP level required to use /portalid registry showip.
+    // -1 means not set — fall back to the global leappad.json value.
+    // When present (1–4), this world's value takes priority over the global config.
+    // Must be added manually to leappad_lan.json — not present in the default file.
+    private int ipVisibilityMinOpLevel = -1;
+
+    // Returns true if this world has an explicit ipVisibilityMinOpLevel override.
+    public boolean hasIpVisibilityOverride() {
+        return ipVisibilityMinOpLevel >= 1 && ipVisibilityMinOpLevel <= 4;
+    }
+
+    // Returns this world's ipVisibilityMinOpLevel override, or -1 if not set.
+    // Callers should check hasIpVisibilityOverride() before using this value.
+    public int getIpVisibilityMinOpLevel() {
+        return ipVisibilityMinOpLevel;
+    }
+
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String FILE_NAME = "leappad_lan.json";
 
@@ -51,6 +68,9 @@ public class WorldLanConfig {
             WorldLanConfig config = new WorldLanConfig();
             if (json.has("lanPort")) {
                 config.lanPort = json.get("lanPort").getAsInt();
+            }
+            if (json.has("ipVisibilityMinOpLevel")) {
+                config.ipVisibilityMinOpLevel = json.get("ipVisibilityMinOpLevel").getAsInt();
             }
             return config;
         } catch (Exception e) {

@@ -360,6 +360,23 @@ public class PortalRegistry {
         return entry == null ? null : entry.nickname;
     }
 
+    // Scans all registry entries and returns the nickname of the first portal
+    // whose linkedAddress matches the given address. Returns null if no match
+    // is found or if the matched entry has an empty nickname.
+    // Used by UI screens that have a target address but not the portal UUID —
+    // first-match-wins is acceptable in the rare case of multiple portals
+    // pointing to the same address with different nicknames.
+    public static String getNicknameForAddress(String address) {
+        if (address == null || address.isEmpty()) return null;
+        for (PortalEntry entry : registry.values()) {
+            if (address.equals(entry.linkedAddress) &&
+                entry.nickname != null && !entry.nickname.isEmpty()) {
+                return entry.nickname;
+            }
+        }
+        return null;
+    }
+
     // -------------------------------------------------------
     // World address
     // -------------------------------------------------------
