@@ -11,6 +11,7 @@ package elder.leapp.fabric.ui;
 
 import elder.leapp.profile.CharacterProfile;
 import elder.leapp.profile.ProfileManager;
+import elder.leapp.portal.PortalRegistry;
 import elder.leapp.transfer.TransferOrchestrator;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -176,7 +177,7 @@ public class ProfileSelectorScreen extends Screen {
 
         graphics.drawCenteredString(this.font, this.title, this.width / 2, 16, 0xFFFFFF);
         graphics.drawCenteredString(this.font,
-            Component.literal("Joining: " + targetAddress),
+            Component.literal("Joining: " + resolveDisplayLabel()),
             this.width / 2, 32, 0xA0A0A0);
 
         int listBottom = this.height - LIST_BOTTOM_MARGIN;
@@ -209,4 +210,12 @@ public class ProfileSelectorScreen extends Screen {
 
     @Override
     public boolean isPauseScreen() { return false; }
+
+    // Returns the nickname for the target address if one is set, otherwise
+    // the raw address. Used in the subtitle line so players see "Dave's World"
+    // instead of an IP when a nickname has been configured for that portal.
+    private String resolveDisplayLabel() {
+        String nick = PortalRegistry.getNicknameForAddress(targetAddress);
+        return (nick != null && !nick.isEmpty()) ? nick : targetAddress;
+    }
 }
