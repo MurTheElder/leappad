@@ -10,10 +10,10 @@ package elder.leapp.fabric.mixin;
 //   the world save path — all public APIs, no private access needed.
 
 import elder.leapp.config.WorldLanConfig;
+import it.unimi.dsi.fastutil.booleans.BooleanConsumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.EditWorldScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.storage.LevelSummary;
@@ -23,15 +23,16 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.io.IOException;
 import java.nio.file.Path;
 
 @Mixin(EditWorldScreen.class)
 public abstract class EditWorldScreenMixin extends Screen {
 
     // Captured from constructor injection — avoids @Shadow and reflection entirely.
+    // EditWorldScreen's actual constructor takes (BooleanConsumer, LevelSummary.WorldConfiguration).
+    // We capture the WorldConfiguration and call getLevelSummary().getLevelId() from it.
     @Unique
-    private LevelSummary leappad_levelSummary;
+    private LevelSummary.WorldConfiguration leappad_worldConfig;
 
     @Unique
     private EditBox leappad_lanPortField;
@@ -43,12 +44,14 @@ public abstract class EditWorldScreenMixin extends Screen {
         super(title);
     }
 
-    // Capture the LevelSummary as early as possible.
-    // EditWorldScreen constructor signature: (Screen lastScreen, LevelSummary summary)
+    // Capture the WorldConfiguration from the real constructor.
+    // Actual vanilla signature: EditWorldScreen(BooleanConsumer callback,
+    //                                           LevelSummary.WorldConfiguration worldConfig)
     @Inject(method = "<init>", at = @At("TAIL"))
-    private void leappad_captureLevel(Screen lastScreen, LevelSummary summary,
-                                       CallbackInfo ci) {
-        this.leappad_levelSummary = summary;
+    private void leappad_captureLevel(BooleanConsumer callback,
+                                      LevelSummary.WorldConfiguration worldConfig,
+                                      CallbackInfo ci) {
+        this.leappad_worldConfig = worldConfig;
     }
 
     @Inject(method = "init", at = @At("TAIL"))
@@ -103,10 +106,10 @@ public abstract class EditWorldScreenMixin extends Screen {
     @Unique
     private Path resolveWorldSaveDir() {
         try {
-            if (leappad_levelSummary == null) return null;
-            String levelId = leappad_levelSummary.getLevelId();
-            // createAccess returns a LevelStorageAccess — getLevelPath(ROOT) gives
-            // the world save directory. We close the access immediately after.
+            if (leappad_worldConfig == null) return null;
+            // getLevelSummary() gives us the LevelSummary, then getLevelId() gives
+            // the save folder name we need to open a LevelStorageAccess.
+            String levelId = leappad_worldConfig.getLevelSummary().getLevelId();
             try (var access = Minecraft.getInstance()
                     .getLevelSource()
                     .createAccess(levelId)) {
