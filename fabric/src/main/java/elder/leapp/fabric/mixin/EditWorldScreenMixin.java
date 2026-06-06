@@ -3,13 +3,17 @@ package elder.leapp.fabric.mixin;
 // EditWorldScreenMixin.java
 // Injects a "Leap! Pad LAN Port" text field into the Edit World screen.
 //
-// World path resolution (no @Shadow, no reflection):
-//   We inject at the HEAD of the constructor to capture the LevelSummary
-//   into a @Unique field. From there we use LevelSummary.getLevelId() with
-//   Minecraft.getInstance().getLevelSource().createAccess(levelId) to get
-//   the world save path — all public APIs, no private access needed.
+// World path resolution:
+//   The EditWorldScreen constructor takes a BooleanConsumer callback and a
+//   WorldConfiguration object. WorldConfiguration has no stable mapped name
+//   in Parchment 1.20.1, so we type the constructor arg as Object and use
+//   reflection to call getLevelSummary() on it, then getLevelId() on the result.
+//   The resolved Path is stored immediately — we never hold a typed reference
+//   to the unmapped WorldConfiguration class.
 
+import elder.leapp.LeapPadCommon;
 import elder.leapp.config.WorldLanConfig;
+import it.unimi.dsi.fastutil.booleans.BooleanConsumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
@@ -23,15 +27,16 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 
 @Mixin(EditWorldScreen.class)
 public abstract class EditWorldScreenMixin extends Screen {
 
-    // Captured from constructor injection — avoids @Shadow and reflection entirely.
+    // Resolved in the constructor injection and stored as a Path.
+    // Avoids holding any typed reference to the unmapped WorldConfiguration class.
     @Unique
-    private LevelSummary leappad_levelSummary;
+    private Path leappad_worldDir;
 
     @Unique
     private EditBox leappad_lanPortField;
@@ -43,20 +48,38 @@ public abstract class EditWorldScreenMixin extends Screen {
         super(title);
     }
 
-    // Capture the LevelSummary as early as possible.
-    // EditWorldScreen constructor signature: (Screen lastScreen, LevelSummary summary)
+    // The real constructor signature is (BooleanConsumer, WorldConfiguration).
+    // We type the second arg as Object so we don't need to name the unmapped class.
+    // Reflection is used to call getLevelSummary() on the WorldConfiguration object,
+    // then getLevelId() on the resulting LevelSummary, then resolve the save path.
     @Inject(method = "<init>", at = @At("TAIL"))
-    private void leappad_captureLevel(Screen lastScreen, LevelSummary summary,
-                                       CallbackInfo ci) {
-        this.leappad_levelSummary = summary;
+    private void leappad_captureLevel(BooleanConsumer callback, Object worldConfig,
+                                      CallbackInfo ci) {
+        try {
+            // worldConfig is LevelSummary.WorldConfiguration — call getLevelSummary()
+            Method getLevelSummary = worldConfig.getClass().getMethod("getLevelSummary");
+            LevelSummary summary = (LevelSummary) getLevelSummary.invoke(worldConfig);
+            String levelId = summary.getLevelId();
+            try (var access = Minecraft.getInstance()
+                    .getLevelSource()
+                    .createAccess(levelId)) {
+                leappad_worldDir = access.getLevelPath(
+                    net.minecraft.world.level.storage.LevelResource.ROOT
+                ).toAbsolutePath();
+            }
+        } catch (Exception e) {
+            LeapPadCommon.LOGGER.warn(
+                "[Leap! Pad] EditWorldScreenMixin: could not resolve world save dir: {}",
+                e.getMessage()
+            );
+        }
     }
 
     @Inject(method = "init", at = @At("TAIL"))
     private void leappad_addLanPortField(CallbackInfo ci) {
-        Path worldSaveDir = resolveWorldSaveDir();
-        if (worldSaveDir == null) return;
+        if (leappad_worldDir == null) return;
 
-        leappad_lanConfig = WorldLanConfig.load(worldSaveDir);
+        leappad_lanConfig = WorldLanConfig.load(leappad_worldDir);
 
         int fieldX = 10;
         int fieldY = this.height - 48;
@@ -74,7 +97,7 @@ public abstract class EditWorldScreenMixin extends Screen {
             leappad_lanPortField.setValue(String.valueOf(leappad_lanConfig.lanPort));
         }
 
-        final Path capturedDir = worldSaveDir;
+        final Path capturedDir = leappad_worldDir;
         leappad_lanPortField.setResponder(text -> {
             if (leappad_lanConfig == null) return;
             try {
@@ -98,28 +121,5 @@ public abstract class EditWorldScreenMixin extends Screen {
             leappad_lanPortField.getY() - 12,
             0xA0A0A0
         );
-    }
-
-    @Unique
-    private Path resolveWorldSaveDir() {
-        try {
-            if (leappad_levelSummary == null) return null;
-            String levelId = leappad_levelSummary.getLevelId();
-            // createAccess returns a LevelStorageAccess — getLevelPath(ROOT) gives
-            // the world save directory. We close the access immediately after.
-            try (var access = Minecraft.getInstance()
-                    .getLevelSource()
-                    .createAccess(levelId)) {
-                return access.getLevelPath(
-                    net.minecraft.world.level.storage.LevelResource.ROOT
-                ).toAbsolutePath();
-            }
-        } catch (Exception e) {
-            elder.leapp.LeapPadCommon.LOGGER.warn(
-                "[Leap! Pad] EditWorldScreenMixin: could not resolve world save dir: {}",
-                e.getMessage()
-            );
-            return null;
-        }
     }
 }
