@@ -4,38 +4,37 @@ package elder.leapp.fabric.mixin;
 // Injects a "Leap! Pad LAN Port" text field into the Edit World screen.
 //
 // World path resolution:
-//   We @Shadow the levelId field (field_24188 in intermediary) which is a plain
-//   String on EditWorldScreen itself. From there we use
-//   Minecraft.getLevelSource().createAccess(levelId) to get the world save path.
-//   This avoids any interaction with the EditWorldScreen constructor, which takes
-//   an unmapped nested type (LevelSummary.WorldConfiguration / class_32$class_5143)
-//   that cannot be referenced by name in Parchment-mapped code.
+//   EditWorldScreen stores a LevelStorageSource.LevelStorageAccess (field_24188)
+//   which it uses internally to write world saves. We locate it by type via
+//   getDeclaredFields() — the same approach used in the prototype builds — and
+//   call getLevelPath(LevelResource.ROOT) on it directly.
+//
+//   We do NOT close this access. The screen owns it and will close it itself.
+//   We borrow the reference only long enough to resolve the path.
+//
+//   This avoids @Shadow (Parchment field name unknown), constructor injection
+//   (constructor takes an unmapped nested type), and any assumption about what
+//   String fields exist on the screen.
 
 import elder.leapp.LeapPadCommon;
 import elder.leapp.config.WorldLanConfig;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.EditWorldScreen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.storage.LevelStorageSource;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.lang.reflect.Field;
 import java.nio.file.Path;
 
 @Mixin(EditWorldScreen.class)
 public abstract class EditWorldScreenMixin extends Screen {
-
-    // The level ID string stored on EditWorldScreen — field_24188 in intermediary,
-    // mapped to "levelId" in Parchment/Mojang 1.20.1 mappings.
-    // This is the world save folder name used to open a LevelStorageAccess.
-    @Shadow
-    private String levelId;
 
     @Unique
     private EditBox leappad_lanPortField;
@@ -49,17 +48,14 @@ public abstract class EditWorldScreenMixin extends Screen {
 
     @Inject(method = "init", at = @At("TAIL"))
     private void leappad_addLanPortField(CallbackInfo ci) {
-        Path worldSaveDir = resolveWorldSaveDir();
+        Path worldSaveDir = leappad_resolveWorldSaveDir();
         if (worldSaveDir == null) return;
 
         leappad_lanConfig = WorldLanConfig.load(worldSaveDir);
 
-        int fieldX = 10;
-        int fieldY = this.height - 48;
-
         leappad_lanPortField = new EditBox(
             this.font,
-            fieldX, fieldY,
+            10, this.height - 48,
             110, 20,
             Component.literal("LAN port")
         );
@@ -96,25 +92,37 @@ public abstract class EditWorldScreenMixin extends Screen {
         );
     }
 
-    // Resolves the world save directory from the shadowed levelId field.
-    // Returns null if levelId is not set or path resolution fails.
+    // Finds the LevelStorageAccess field on EditWorldScreen by type, borrows it
+    // long enough to resolve the world save path, then releases the reference.
+    // We do NOT close the access — the screen owns it.
     @Unique
-    private Path resolveWorldSaveDir() {
+    private Path leappad_resolveWorldSaveDir() {
         try {
-            if (levelId == null || levelId.isEmpty()) return null;
-            try (var access = Minecraft.getInstance()
-                    .getLevelSource()
-                    .createAccess(levelId)) {
-                return access.getLevelPath(
-                    net.minecraft.world.level.storage.LevelResource.ROOT
-                ).toAbsolutePath();
+            Class<?> screenClass = ((Object) this).getClass();
+            // Walk up the class hierarchy in case the field is on a superclass,
+            // though in 1.20.1 it is on EditWorldScreen itself.
+            while (screenClass != null && screenClass != Object.class) {
+                for (Field field : screenClass.getDeclaredFields()) {
+                    if (LevelStorageSource.LevelStorageAccess.class
+                            .isAssignableFrom(field.getType())) {
+                        field.setAccessible(true);
+                        LevelStorageSource.LevelStorageAccess access =
+                            (LevelStorageSource.LevelStorageAccess) field.get(this);
+                        if (access != null) {
+                            return access.getLevelPath(
+                                net.minecraft.world.level.storage.LevelResource.ROOT
+                            ).toAbsolutePath();
+                        }
+                    }
+                }
+                screenClass = screenClass.getSuperclass();
             }
         } catch (Exception e) {
             LeapPadCommon.LOGGER.warn(
                 "[Leap! Pad] EditWorldScreenMixin: could not resolve world save dir: {}",
                 e.getMessage()
             );
-            return null;
         }
+        return null;
     }
 }
