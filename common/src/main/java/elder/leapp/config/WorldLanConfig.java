@@ -36,6 +36,16 @@ public class WorldLanConfig {
     // Must be added manually to leappad_lan.json — not present in the default file.
     private int ipVisibilityMinOpLevel = -1;
 
+    // Staged LAN port value from the Create World screen.
+    // Set by CreateWorldScreenMixin as the player types, consumed and cleared
+    // in LeapPadFabric.SERVER_STARTING after the world save path is available.
+    // -1 means not set.
+    private static int stagedLanPort = -1;
+
+    public static void setStagedLanPort(int port) { stagedLanPort = port; }
+    public static int  getStagedLanPort()          { return stagedLanPort; }
+    public static void clearStagedLanPort()        { stagedLanPort = -1; }
+
     // Returns true if this world has an explicit ipVisibilityMinOpLevel override.
     public boolean hasIpVisibilityOverride() {
         return ipVisibilityMinOpLevel >= 1 && ipVisibilityMinOpLevel <= 4;
