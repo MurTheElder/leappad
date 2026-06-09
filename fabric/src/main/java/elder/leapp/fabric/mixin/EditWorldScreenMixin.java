@@ -83,12 +83,21 @@ public abstract class EditWorldScreenMixin extends Screen {
     private void leappad_renderLanPortLabel(GuiGraphics graphics, int mouseX, int mouseY,
                                              float delta, CallbackInfo ci) {
         if (leappad_lanPortField == null) return;
+        // Label above the field
         graphics.drawString(
             this.font,
             "Leap! Pad LAN Port (auto-open)",
             leappad_lanPortField.getX(),
-            leappad_lanPortField.getY() - 12,
+            leappad_lanPortField.getY() - 22,
             0xA0A0A0
+        );
+        // Warning below the label in bright red — must be immediately visible
+        graphics.drawString(
+            this.font,
+            "Warning: exposes world to network on launch",
+            leappad_lanPortField.getX(),
+            leappad_lanPortField.getY() - 12,
+            0xFF5555
         );
     }
 
