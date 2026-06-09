@@ -42,28 +42,43 @@ public class PortalIgnitionHandler {
     public static void onFirePlaced(Level level, BlockPos firePos) {
         if (level.isClientSide()) return;
 
-        // The block below the fire must be a frame block
-        BlockPos below = firePos.below();
-        if (!isFrameBlock(level, below)) return;
-
-        boolean queueEW = false;
-        boolean queueNS = false;
-
-        // Check E/W pair — fire could be at the base of an E-W oriented frame
-        BlockPos east = below.east();
-        BlockPos west = below.west();
-        if (isFrameBlock(level, east) && isFrameBlock(level, west)) {
-            queueEW = true;
+        // Pre-filter: check if any block adjacent to the fire position (at the same Y
+        // or one below) is a frame block. This eliminates fire placed nowhere near a
+        // portal frame without running the expensive full trace.
+        // We check same-Y neighbours first (fire inside the frame), then below-Y
+        // neighbours (fire placed on top of a frame block).
+        boolean anyFrameAdjacent = false;
+        for (Direction dir : new Direction[]{
+                Direction.EAST, Direction.WEST, Direction.NORTH, Direction.SOUTH}) {
+            if (isFrameBlock(level, firePos.relative(dir))) {
+                anyFrameAdjacent = true;
+                break;
+            }
         }
-
-        // Check N/S pair — fire could be at the base of a N-S oriented frame
-        BlockPos north = below.north();
-        BlockPos south = below.south();
-        if (isFrameBlock(level, north) && isFrameBlock(level, south)) {
-            queueNS = true;
+        if (!anyFrameAdjacent) {
+            BlockPos below = firePos.below();
+            for (Direction dir : new Direction[]{
+                    Direction.EAST, Direction.WEST, Direction.NORTH, Direction.SOUTH}) {
+                if (isFrameBlock(level, below.relative(dir))) {
+                    anyFrameAdjacent = true;
+                    break;
+                }
+            }
         }
+        if (!anyFrameAdjacent) return;
 
-        if (!queueEW && !queueNS) return; // Neither orientation is possible here
+        // Queue orientations selectively: only run EW if at least one east/west
+        // neighbour is a frame block, only NS if at least one north/south is.
+        boolean queueEW = isFrameBlock(level, firePos.east())  ||
+                          isFrameBlock(level, firePos.west())  ||
+                          isFrameBlock(level, firePos.below().east()) ||
+                          isFrameBlock(level, firePos.below().west());
+        boolean queueNS = isFrameBlock(level, firePos.north()) ||
+                          isFrameBlock(level, firePos.south()) ||
+                          isFrameBlock(level, firePos.below().north()) ||
+                          isFrameBlock(level, firePos.below().south());
+
+        if (!queueEW && !queueNS) return;
 
         // Run frame trace for each queued orientation
         FrameResult ewResult = queueEW ? traceFrame(level, firePos, Direction.Axis.X) : null;
@@ -133,8 +148,9 @@ public class PortalIgnitionHandler {
 
         result.bottomLeft = cursor;
 
-        // Measure width (interior columns)
-        int width = 0;
+        // Measure width (interior columns).
+        // Initialise at 1 so the starting position (bottomLeft column) is counted.
+        int width = 1;
         BlockPos widthCursor = cursor;
         while (width < MAX_WIDTH && !isFrameBlock(level, widthCursor.relative(right))) {
             widthCursor = widthCursor.relative(right);
@@ -143,8 +159,9 @@ public class PortalIgnitionHandler {
         if (width < MIN_WIDTH || !isFrameBlock(level, widthCursor.relative(right))) return result;
         result.width = width;
 
-        // Measure height (interior rows)
-        int height = 0;
+        // Measure height (interior rows).
+        // Initialise at 1 so the starting position (bottomLeft row) is counted.
+        int height = 1;
         BlockPos heightCursor = cursor;
         while (height < MAX_HEIGHT && !isFrameBlock(level, heightCursor.relative(up))) {
             heightCursor = heightCursor.relative(up);
@@ -167,10 +184,12 @@ public class PortalIgnitionHandler {
         result.corners.add(topLeft);                               // top-left
         result.corners.add(topRight);                              // top-right
 
-        // Verify interior is clear and collect positions for filling
+        // Verify interior is clear and collect positions for filling.
+        // Offsets start at 0 from bottomLeft — the bottomLeft position itself
+        // is the first interior column/row.
         for (int h = 0; h < height; h++) {
             for (int w = 0; w < width; w++) {
-                BlockPos interior = cursor.relative(right, w + 1).relative(up, h + 1);
+                BlockPos interior = cursor.relative(right, w).relative(up, h);
                 BlockState state = level.getBlockState(interior);
                 // Interior must be air or a replaceable block — not solid
                 if (!state.isAir() && !state.canBeReplaced()) return result;

@@ -17,9 +17,11 @@ package elder.leapp.portal;
 // client-side sequence.
 
 import elder.leapp.LeapPadCommon;
+import elder.leapp.config.LeapPadConfig;
 import elder.leapp.transfer.TransferOrchestrator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.BlockGetter;
@@ -80,6 +82,36 @@ public class LeapPortalBlock extends Block {
         return Shapes.empty();
     }
 
+    // Called by Minecraft whenever a neighbouring block changes state.
+    // If the changed neighbour is a LeapPortalBlock or a config frame block,
+    // this portal block removes itself — cascading outward through all connected
+    // portal blocks until the entire portal is cleared. No UUID lookup needed;
+    // the cascade handles itself via repeated neighbourChanged calls.
+    @Override
+    public void neighborChanged(BlockState state, Level level, BlockPos pos,
+                                Block neighborBlock, BlockPos neighborPos,
+                                boolean movedByPiston) {
+        if (level.isClientSide()) return;
+        // Check if the changed neighbour is a portal block or a frame block
+        boolean isPortal = neighborBlock instanceof LeapPortalBlock;
+        boolean isFrame  = isConfigFrameBlock(neighborBlock);
+        if (isPortal || isFrame) {
+            // A portal or frame neighbour changed — remove this block
+            level.removeBlock(pos, false);
+        }
+    }
+
+    // Returns true if the given block is in the leappad:frame_blocks config list.
+    // Duplicates the check from PortalIgnitionHandler to avoid a cross-dependency.
+    private static boolean isConfigFrameBlock(Block block) {
+        String blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+            .getKey(block).toString();
+        for (String frameBlock : LeapPadConfig.frameBlocks) {
+            if (frameBlock.equals(blockId)) return true;
+        }
+        return false;
+    }
+
     @Override
     public void entityInside(BlockState state, Level level, BlockPos pos,
                               Entity entity) {
@@ -92,14 +124,28 @@ public class LeapPortalBlock extends Block {
         // Re-entry guard
         if (activeTriggers.contains(playerId)) return;
 
+        // Check if this portal block is registered at all
+        String portalUuid = PortalRegistry.getUuidForPos(pos);
+        if (portalUuid == null) {
+            // Block exists in the world but has no registry entry —
+            // manually placed, or registry was cleared. Useful for debugging.
+            player.sendSystemMessage(Component.literal(
+                "[Leap! Pad] This portal block is not registered."
+            ));
+            return;
+        }
+
         // Check if this portal is linked — use convenience method to avoid
         // separate UUID lookup followed by address lookup.
         String targetAddress = PortalRegistry.getLinkedAddressForPos(pos);
-        if (targetAddress == null || targetAddress.isEmpty()) return;
-
-        // Also get the portal UUID for the initiate packet.
-        String portalUuid = PortalRegistry.getUuidForPos(pos);
-        if (portalUuid == null) return;
+        if (targetAddress == null || targetAddress.isEmpty()) {
+            // Registered but no book has been thrown in yet
+            player.sendSystemMessage(Component.literal(
+                "[Leap! Pad] This portal is not linked. " +
+                "Throw a written book containing an address into it."
+            ));
+            return;
+        }
 
         // Check cooldown
         if (TransferOrchestrator.isOnCooldown(playerId.toString())) {

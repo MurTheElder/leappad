@@ -63,7 +63,18 @@ public class ProbeListener {
 
     // Opens a ServerSocket on the given port and starts accepting connections.
     // Logs a warning and returns cleanly if the port is unavailable.
+    // Safe to call directly from /leappad open without calling start() first —
+    // the executor is initialised lazily if it hasn't been created yet.
     public static void openListenerOnPort(int port) {
+        // Lazy-init: create the executor if /leappad open is called before start()
+        if (executor == null || executor.isShutdown()) {
+            running = true;
+            executor = Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "LeapPad-ProbeListener");
+                t.setDaemon(true);
+                return t;
+            });
+        }
         executor.submit(() -> {
             ServerSocket server;
             try {

@@ -80,10 +80,10 @@ public class LeapPadFabric implements ModInitializer {
             // config is loaded and the server port is known.
             PortBindingCache.init(server.getPort());
 
-            // Start listening for incoming transfer probes on the configured probe ports.
-            // Must be called AFTER PortBindingCache.init() so the listener binds the
-            // correct ports. Starting before init() would use port 0 as the game port.
-            ProbeListener.start();
+            // ProbeListener is NOT started here automatically. It only starts when:
+            //   1. /leappad open is run (explicit OP action)
+            //   2. LAN auto-open fires below (leappad_lan.json configured)
+            // This matches V2 behaviour and avoids binding to port 0 before LAN is open.
 
             // SS1 fix: clear any stale sessions from a previous world load in the same JVM.
             // Also resets the timeout scheduler state for a clean start.
@@ -98,7 +98,19 @@ public class LeapPadFabric implements ModInitializer {
             // F2: LAN auto-open. Read the per-world LAN config and if configured,
             // dispatch /publish [port] to open the world to LAN automatically,
             // then bind the Leap! Pad probe listener on that port.
+            // Also check for a staged port set by CreateWorldScreenMixin — this is
+            // the port typed into the Create World screen before the world existed.
             WorldLanConfig lanConfig = WorldLanConfig.load(worldSaveDir);
+            int stagedPort = WorldLanConfig.getStagedLanPort();
+            if (stagedPort > 0 && !lanConfig.isConfigured()) {
+                // Write the staged port to the world config now that the save dir exists
+                lanConfig.lanPort = stagedPort;
+                lanConfig.save(worldSaveDir);
+                LeapPadCommon.LOGGER.info(
+                    "[Leap! Pad] Staged LAN port {} written to world config.", stagedPort
+                );
+            }
+            WorldLanConfig.clearStagedLanPort();
             if (lanConfig.isConfigured()) {
                 int lanPort = lanConfig.lanPort;
                 try {
