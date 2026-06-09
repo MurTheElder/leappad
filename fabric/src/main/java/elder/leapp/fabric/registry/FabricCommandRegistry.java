@@ -23,6 +23,7 @@ import elder.leapp.config.LeapPadConfig;
 import elder.leapp.config.WorldLanConfig;
 import elder.leapp.portal.PortalRegistry;
 import elder.leapp.probe.PortBindingCache;
+import elder.leapp.transfer.ProbeListener;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
@@ -64,11 +65,22 @@ public class FabricCommandRegistry {
 
         dispatcher.register(Commands.literal("leappad")
 
-            // /leappad open — bind all config ports
+            // /leappad open — bind all config ports and start probe listener
             .then(Commands.literal("open")
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
+                    if (!ctx.getSource().getServer().isPublished()) {
+                        ctx.getSource().sendFailure(Component.literal(
+                            "[Leap! Pad] World is not open to LAN yet. " +
+                            "Open to LAN first, then run /leappad open."
+                        ));
+                        return 0;
+                    }
                     PortBindingCache.bindAllConfigPorts();
+                    for (int port : PortBindingCache.getBoundPorts()) {
+                        ProbeListener.openListenerOnPort(port);
+                        broadcastPortBound(port, ctx.getSource());
+                    }
                     ctx.getSource().sendSuccess(
                         () -> Component.literal("[Leap! Pad] All config ports bound."), true
                     );
@@ -78,9 +90,18 @@ public class FabricCommandRegistry {
                 .then(Commands.argument("ports", StringArgumentType.greedyString())
                     .requires(src -> src.hasPermission(2))
                     .executes(ctx -> {
+                        if (!ctx.getSource().getServer().isPublished()) {
+                            ctx.getSource().sendFailure(Component.literal(
+                                "[Leap! Pad] World is not open to LAN yet. " +
+                                "Open to LAN first, then run /leappad open."
+                            ));
+                            return 0;
+                        }
                         String ports = StringArgumentType.getString(ctx, "ports");
                         for (int port : parsePorts(ports)) {
                             PortBindingCache.bindPort(port);
+                            ProbeListener.openListenerOnPort(port);
+                            broadcastPortBound(port, ctx.getSource());
                         }
                         ctx.getSource().sendSuccess(
                             () -> Component.literal("[Leap! Pad] Port(s) bound: " + ports), true
@@ -90,16 +111,17 @@ public class FabricCommandRegistry {
                 )
             )
 
-            // /leappad close — unbind all ports
+            // /leappad close — unbind all ports and stop probe listener
             .then(Commands.literal("close")
                 .requires(src -> src.hasPermission(2))
                 .executes(ctx -> {
                     PortBindingCache.unbindAllPorts();
+                    ProbeListener.stop();
                     // Clear the LAN status HUD on the client — world is no longer open
                     net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
                     if (mc != null) mc.execute(() -> elder.leapp.fabric.ui.LanStatusHud.clear());
                     ctx.getSource().sendSuccess(
-                        () -> Component.literal("[Leap! Pad] All ports unbound."), true
+                        () -> Component.literal("[Leap! Pad] All ports unbound, probe listener stopped."), true
                     );
                     return 1;
                 })
@@ -483,6 +505,32 @@ public class FabricCommandRegistry {
                     )
                 )
             )
+
+            // /portalid register (x1 y1 z1)(x2 y2 z2)(x3 y3 z3)(x4 y4 z4)
+            // Manually registers a portal frame by its four corner block positions.
+            // Useful for debugging or re-registering portals whose entries were lost.
+            // Responds with the assigned UUID so the player can verify the entry.
+            .then(Commands.literal("register")
+                .requires(src -> src.hasPermission(2))
+                .then(Commands.argument("corners", StringArgumentType.greedyString())
+                    .executes(ctx -> {
+                        String raw = StringArgumentType.getString(ctx, "corners").trim();
+                        java.util.List<BlockPos> corners = parseCorners(raw);
+                        if (corners == null) {
+                            ctx.getSource().sendFailure(Component.literal(
+                                "[Leap! Pad] Invalid format. Expected: (x1 y1 z1)(x2 y2 z2)(x3 y3 z3)(x4 y4 z4)"
+                            ));
+                            return 0;
+                        }
+                        String uuid = PortalRegistry.registerPortal(corners);
+                        ctx.getSource().sendSuccess(
+                            () -> Component.literal("[Leap! Pad] Portal registered. UUID: " + uuid),
+                            false
+                        );
+                        return 1;
+                    })
+                )
+            )
         );
     }
 
@@ -622,6 +670,40 @@ public class FabricCommandRegistry {
         );
         LeapPadCommon.LOGGER.warn("[Leap! Pad] showip rejection: {} declared OP={}, threshold={}",
             playerName, declaredLevel, threshold);
+    }
+
+    // Broadcasts a port-bound notification to all online OP-level players.
+    // Called after /leappad open successfully starts a probe listener on a port.
+    private static void broadcastPortBound(int port, CommandSourceStack source) {
+        String msg = "[Leap! Pad] Probe listener opened on port " + port + ".";
+        source.getServer().execute(() ->
+            source.getServer().getPlayerList().getPlayers().forEach(p -> {
+                if (p.hasPermissions(2)) {
+                    p.sendSystemMessage(Component.literal(msg));
+                }
+            })
+        );
+    }
+
+    // Parses a corner string of the form "(x1 y1 z1)(x2 y2 z2)(x3 y3 z3)(x4 y4 z4)"
+    // into a list of four BlockPos values. Returns null if the format is invalid.
+    private static java.util.List<BlockPos> parseCorners(String raw) {
+        try {
+            java.util.List<BlockPos> result = new java.util.ArrayList<>();
+            // Split on ')(' to get each coordinate group
+            String stripped = raw.replace("(", "").replace(")", " ");
+            String[] parts = stripped.trim().split("\\s+");
+            if (parts.length != 12) return null; // 4 corners × 3 coordinates each
+            for (int i = 0; i < 4; i++) {
+                int x = Integer.parseInt(parts[i * 3]);
+                int y = Integer.parseInt(parts[i * 3 + 1]);
+                int z = Integer.parseInt(parts[i * 3 + 2]);
+                result.add(new BlockPos(x, y, z));
+            }
+            return result;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     // -------------------------------------------------------
